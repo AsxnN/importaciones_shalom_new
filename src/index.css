@@ -1,0 +1,1278 @@
+/* ==============================================================================
+   IMPORTACIONES SHALOM — SISTEMA OPERATIVO Y CONTROL LOGÍSTICO WMS
+   Dirección de Diseño: skill_design.md
+   Tokens Oficiales:
+     - Canvas: #F2F6F8
+     - Superficie: #FFFFFF
+     - Brand Deep: #e51b24
+     - Brand: #167D8D
+     - Brand Soft: #E4F1F3
+     - Texto Primario: #1A202C
+     - Texto Secundario: #627985
+     - Borde: #D8E3E7
+     - Advertencia: #BC791F
+     - Peligro: #B3402A
+     - Éxito: #2F7D4F
+   Tipografía:
+     - Títulos y Display: Barlow Semi Condensed
+     - Cuerpo, Tablas, Controles: Source Sans 3
+   ============================================================================== */
+
+:root,
+[data-theme="light"] {
+  /* Design Tokens de skill_design.md */
+  --color-canvas: #F2F6F8;
+  --color-surface: #FFFFFF;
+  --color-brand-deep: #e51b24;
+  --color-brand: #167D8D;
+  --color-brand-hover: #136673;
+  --color-brand-soft: #E4F1F3;
+  --color-text-primary: #1A202C;
+  --color-text-secondary: #627985;
+  --color-border: #D8E3E7;
+  --color-warning: #BC791F;
+  --color-danger: #B3402A;
+  --color-success: #2F7D4F;
+
+  /* Tipografía */
+  --font-display: 'Barlow Semi Condensed', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-body: 'Source Sans 3', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+
+  /* Aliases de compatibilidad con componentes previos */
+  --color-bg-base: var(--color-canvas);
+  --color-bg-surface: var(--color-surface);
+  --color-bg-surface-raised: #FAFDFE;
+  --color-bg-surface-hover: var(--color-brand-soft);
+  --color-border-subtle: #E6EFF2;
+  --color-text-main: var(--color-text-primary);
+  --color-text-body: var(--color-text-primary);
+  --color-text-muted: var(--color-text-secondary);
+  --color-text-subtle: #8298A3;
+
+  --color-accent-amber: var(--color-brand);
+  --color-accent-amber-hover: var(--color-brand-hover);
+  --color-accent-amber-subtle: var(--color-brand-soft);
+  --color-accent-amber-border: var(--color-border);
+
+  --color-tech-sky: var(--color-brand);
+  --color-tech-sky-subtle: var(--color-brand-soft);
+  --color-tech-sky-border: var(--color-border);
+
+  --color-status-green: var(--color-success);
+  --color-status-green-bg: rgba(47, 125, 79, 0.1);
+  --color-status-green-border: rgba(47, 125, 79, 0.28);
+
+  --color-status-yellow: var(--color-warning);
+  --color-status-yellow-bg: rgba(188, 121, 31, 0.1);
+  --color-status-yellow-border: rgba(188, 121, 31, 0.28);
+
+  --color-status-red: var(--color-danger);
+  --color-status-red-bg: rgba(179, 64, 42, 0.1);
+  --color-status-red-border: rgba(179, 64, 42, 0.28);
+
+  --color-modal-overlay: rgba(15, 23, 42, 0.6);
+  --color-card-shadow: none;
+
+  color-scheme: light;
+}
+
+/* Modo oscuro opcional de alto contraste conservando la identidad técnica */
+[data-theme="dark"] {
+  --color-canvas: #0B191E;
+  --color-surface: #12242B;
+  --color-brand-deep: #081519;
+  --color-brand: #2299AB;
+  --color-brand-hover: #198090;
+  --color-brand-soft: #163640;
+  --color-text-primary: #F2F8FA;
+  --color-text-secondary: #97B0BA;
+  --color-border: #233D47;
+  --color-warning: #D99534;
+  --color-danger: #D1563F;
+  --color-success: #3DA167;
+
+  --font-display: 'Barlow Semi Condensed', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-body: 'Source Sans 3', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+
+  --color-bg-base: var(--color-canvas);
+  --color-bg-surface: var(--color-surface);
+  --color-bg-surface-raised: #162B33;
+  --color-bg-surface-hover: var(--color-brand-soft);
+  --color-border-subtle: #1C333C;
+  --color-text-main: var(--color-text-primary);
+  --color-text-body: var(--color-text-primary);
+  --color-text-muted: var(--color-text-secondary);
+  --color-text-subtle: #6F8994;
+
+  --color-accent-amber: var(--color-brand);
+  --color-accent-amber-hover: var(--color-brand-hover);
+  --color-accent-amber-subtle: var(--color-brand-soft);
+  --color-accent-amber-border: var(--color-border);
+
+  --color-tech-sky: var(--color-brand);
+  --color-tech-sky-subtle: var(--color-brand-soft);
+  --color-tech-sky-border: var(--color-border);
+
+  --color-status-green: var(--color-success);
+  --color-status-green-bg: rgba(61, 161, 103, 0.16);
+  --color-status-green-border: rgba(61, 161, 103, 0.35);
+
+  --color-status-yellow: var(--color-warning);
+  --color-status-yellow-bg: rgba(217, 149, 52, 0.16);
+  --color-status-yellow-border: rgba(217, 149, 52, 0.35);
+
+  --color-status-red: var(--color-danger);
+  --color-status-red-bg: rgba(209, 86, 63, 0.16);
+  --color-status-red-border: rgba(209, 86, 63, 0.35);
+
+  --color-modal-overlay: rgba(0, 0, 0, 0.7);
+  --color-card-shadow: none;
+
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  min-height: 100vh;
+  width: 100vw;
+  overflow-x: hidden;
+  background-color: var(--color-canvas);
+  color: var(--color-text-primary);
+  font-family: var(--font-body);
+  font-size: 15px;
+  line-height: 1.5;
+  font-synthesis: none;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ==============================================================================
+   TIPOGRAFÍA Y ENCABEZADOS (skill_design.md)
+   ============================================================================== */
+h1, h2, h3, h4, .brand-title, .section-title, .page-title {
+  font-family: var(--font-display);
+  color: var(--color-brand-deep);
+  text-align: left;
+  font-weight: 600;
+  text-transform: none; /* Regla: sentence case, nunca ALL CAPS */
+  font-style: normal;  /* Regla: no cursivas */
+  margin: 0 0 6px 0;
+}
+
+/* Escala Tipográfica de skill_design.md */
+h1, .page-title {
+  font-size: 28px;
+  line-height: 1.2;
+}
+
+h2, .section-title {
+  font-size: 22px;
+  line-height: 1.25;
+}
+
+h3 {
+  font-size: 18px;
+  line-height: 1.3;
+}
+
+p {
+  margin: 0 0 8px 0;
+  color: var(--color-text-primary);
+  font-size: 15px;
+}
+
+.muted, .page-lead {
+  color: var(--color-text-secondary);
+  font-size: 14px;
+}
+
+.eyebrow {
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  text-transform: none;
+  margin: 0 0 4px 0;
+}
+
+/* ==============================================================================
+   LAYOUT PRINCIPAL: SIDEBAR 220px + ESPACIO DE TRABAJO (skill_design.md)
+   ============================================================================== */
+.app-layout {
+  display: flex;
+  min-height: 100vh;
+  width: 100%;
+  background-color: var(--color-canvas);
+}
+
+/* Barra Lateral Fija de 220 px */
+.app-sidebar {
+  width: 220px;
+  min-width: 220px;
+  max-width: 220px;
+  background-color: var(--color-brand-deep);
+  color: #FFFFFF;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  border-right: 1px solid rgba(0, 0, 0, 0.12);
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+  z-index: 50;
+}
+
+.sidebar-header {
+  padding: 20px 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+.sidebar-brand-title {
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 700;
+  color: #FFFFFF;
+  letter-spacing: 0.02em;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sidebar-brand-subtitle {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.85);
+  margin-top: 3px;
+  display: block;
+}
+
+/* Navegación del Sidebar */
+.sidebar-nav {
+  padding: 16px 8px;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.sidebar-group-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.7);
+  padding: 12px 10px 4px;
+  text-transform: none; /* sentence case */
+  letter-spacing: 0.04em;
+}
+
+.sidebar-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 12px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.9);
+  font-family: var(--font-body);
+  font-size: 14px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+  position: relative;
+}
+
+.sidebar-nav-item:hover {
+  background: rgba(255, 255, 255, 0.15);
+  color: #FFFFFF;
+}
+
+.sidebar-nav-item.active {
+  background: rgba(0, 0, 0, 0.22);
+  color: #FFFFFF;
+  font-weight: 600;
+  border-left: 3px solid #FFFFFF;
+}
+
+.sidebar-nav-item:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.sidebar-nav-code {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.2);
+  color: #FFFFFF;
+}
+
+.sidebar-nav-tag {
+  margin-left: auto;
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.8);
+  background: rgba(0, 0, 0, 0.25);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+/* Pie de Barra Lateral: Perfil y Sesión */
+.sidebar-footer {
+  padding: 14px 16px;
+  border-top: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(0, 0, 0, 0.15);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sidebar-user-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sidebar-user-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #FFFFFF;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sidebar-user-role {
+  font-size: 12px;
+  color: #A4BFCB;
+}
+
+.sidebar-logout-btn {
+  background: transparent;
+  border: 1px solid rgba(216, 227, 231, 0.25);
+  color: #E4F1F3;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  text-align: center;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.sidebar-logout-btn:hover {
+  background: rgba(228, 241, 243, 0.15);
+  border-color: #E4F1F3;
+  color: #FFFFFF;
+}
+
+/* Espacio de Contenido Central */
+.app-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background-color: var(--color-canvas);
+}
+
+/* Cabecera Superior (Header) */
+.app-header {
+  height: 56px;
+  background-color: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+  padding: 0 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.breadcrumb-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: var(--color-text-secondary);
+}
+
+.breadcrumb-active {
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.operational-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px;
+  border-radius: 4px;
+  background: rgba(47, 125, 79, 0.08);
+  border: 1px solid rgba(47, 125, 79, 0.25);
+  color: var(--color-success);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: currentColor;
+}
+
+/* Área de Trabajo de Vistas */
+.app-workspace {
+  padding: 24px;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+/* ==============================================================================
+   BOTONES E INTERACCIONES (skill_design.md)
+   ============================================================================== */
+button {
+  font-family: var(--font-body);
+  font-size: 14px;
+  cursor: pointer;
+  border-radius: 6px;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+/* Botón Primario: sólido --color-brand (#167D8D), texto blanco, 6-8px radio */
+.button,
+button.primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background-color: var(--color-brand);
+  color: #FFFFFF;
+  border: 1px solid var(--color-brand);
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-weight: 500;
+  line-height: 1.3;
+}
+
+.button:hover:not(:disabled),
+button.primary:hover:not(:disabled) {
+  background-color: var(--color-brand-hover);
+  border-color: var(--color-brand-hover);
+}
+
+.button:disabled,
+button.primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Botón Secundario: superficie blanca, 1px --color-border, texto oscuro */
+.button.secondary,
+button.secondary {
+  background-color: var(--color-surface);
+  color: var(--color-text-primary);
+  border: 1px solid var(--color-border);
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-weight: 500;
+}
+
+.button.secondary:hover:not(:disabled),
+button.secondary:hover:not(:disabled) {
+  background-color: var(--color-brand-soft);
+  border-color: var(--color-border);
+}
+
+.button-sm {
+  padding: 5px 10px;
+  font-size: 13px;
+}
+
+.link-button, .link-back {
+  background: transparent;
+  border: 0;
+  color: var(--color-brand);
+  font-weight: 500;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+}
+
+.link-button:hover, .link-back:hover {
+  text-decoration: underline;
+}
+
+/* ==============================================================================
+   PANELES, CONTENEDORES Y SUPERFICIES (skill_design.md)
+   ============================================================================== */
+.panel {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 20px;
+  box-shadow: none; /* Sin sombras decorativas */
+  width: 100%;
+}
+
+.page-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--color-border);
+  margin-bottom: 4px;
+}
+
+.view-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+
+.module-code-badge {
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-brand-deep);
+  background: var(--color-brand-soft);
+  border: 1px solid var(--color-border);
+  padding: 2px 7px;
+  border-radius: 4px;
+}
+
+/* ==============================================================================
+   INDICADORES HORIZONTALES (skill_design.md - Key Indicators)
+   ============================================================================== */
+.indicator-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 16px;
+  width: 100%;
+}
+
+.indicator-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: left;
+  text-decoration: none;
+  color: inherit;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.indicator-card:hover {
+  border-color: var(--color-brand);
+  background-color: #FAFDFE;
+}
+
+.indicator-card.attention {
+  border-color: rgba(188, 121, 31, 0.4);
+  background: rgba(188, 121, 31, 0.04);
+}
+
+.indicator-card.attention .indicator-value {
+  color: var(--color-warning);
+}
+
+.indicator-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+  text-transform: none; /* Sentence case */
+}
+
+.indicator-value {
+  font-family: var(--font-display);
+  font-size: 28px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  line-height: 1.1;
+  margin: 2px 0;
+}
+
+.indicator-context {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+/* ==============================================================================
+   PANEL DE ATENCIÓN REQUERIDA (skill_design.md - Attention Panel)
+   ============================================================================== */
+.overview-split-layout {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr;
+  gap: 20px;
+  width: 100%;
+}
+
+.attention-panel {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.attention-panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.attention-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.attention-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 6px;
+  background: var(--color-canvas);
+  border: 1px solid var(--color-border);
+}
+
+.attention-item-content {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.attention-item-module {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-brand-deep);
+}
+
+.attention-item-desc {
+  font-size: 14px;
+  color: var(--color-text-primary);
+}
+
+.attention-item-action {
+  flex-shrink: 0;
+}
+
+.empty-attention {
+  padding: 24px;
+  text-align: center;
+  color: var(--color-text-secondary);
+  font-size: 14px;
+}
+
+/* ==============================================================================
+   RESÚMENES DE MÓDULOS (skill_design.md - Module Summaries)
+   ============================================================================== */
+.module-summaries-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 16px;
+  width: 100%;
+}
+
+.module-summary-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 12px;
+  text-align: left;
+}
+
+.module-summary-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.module-summary-title {
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  margin: 0;
+}
+
+.module-summary-desc {
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  line-height: 1.45;
+  margin: 0;
+  flex: 1;
+}
+
+.module-summary-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-top: 10px;
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+/* ==============================================================================
+   TABLAS Y FILAS (skill_design.md)
+   ============================================================================== */
+.table-wrap {
+  overflow-x: auto;
+  border-radius: 8px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  width: 100%;
+  margin-top: 12px;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  font-size: 14px;
+}
+
+th, td {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--color-border);
+  white-space: nowrap;
+}
+
+th {
+  background: var(--color-canvas);
+  color: var(--color-text-secondary);
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: none; /* Regla: no ALL CAPS */
+  letter-spacing: normal;
+  border-bottom: 1px solid var(--color-border);
+}
+
+td {
+  font-size: 14px;
+  color: var(--color-text-primary);
+  background: var(--color-surface);
+}
+
+tr:hover td {
+  background: var(--color-brand-soft);
+}
+
+tr.selected td {
+  background: var(--color-brand-soft);
+}
+
+/* Badges e Indicadores */
+.sku-badge {
+  font-family: var(--font-body);
+  font-weight: 600;
+  color: var(--color-brand-deep);
+  background: var(--color-brand-soft);
+  border: 1px solid var(--color-border);
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 13px;
+  display: inline-block;
+}
+
+.category-pill {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: var(--color-canvas);
+  border: 1px solid var(--color-border);
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+/* Controles de Tabla y Filtros */
+.table-controls {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+  padding: 12px 16px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  width: 100%;
+}
+
+.filter-group, .search-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+}
+
+.filter-group label {
+  font-weight: 500;
+  color: var(--color-text-secondary);
+}
+
+.filter-group select,
+.search-group input {
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 7px 12px;
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  font-family: var(--font-body);
+  font-size: 14px;
+}
+
+.filter-group select:focus,
+.search-group input:focus {
+  outline: 2px solid var(--color-brand);
+  border-color: var(--color-brand);
+}
+
+.btn-detail {
+  background: var(--color-surface);
+  color: var(--color-brand);
+  border: 1px solid var(--color-border);
+  padding: 5px 10px;
+  border-radius: 6px;
+  font-weight: 500;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.btn-detail:hover {
+  background: var(--color-brand-soft);
+  border-color: var(--color-brand);
+}
+
+/* ==============================================================================
+   FORMULARIOS Y ENTRADAS (skill_design.md)
+   ============================================================================== */
+.product-form, .category-form {
+  display: grid;
+  gap: 14px;
+  width: 100%;
+}
+
+.product-form label,
+.category-form label,
+.number-grid label {
+  display: grid;
+  gap: 5px;
+  font-weight: 500;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+}
+
+.product-form input,
+.product-form select,
+.product-form textarea,
+.category-form input,
+.category-form textarea,
+.inline-form input {
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 8px 12px;
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  font-family: var(--font-body);
+  font-size: 14px;
+}
+
+.product-form input:focus,
+.product-form select:focus,
+.category-form input:focus,
+.inline-form input:focus {
+  outline: 2px solid var(--color-brand);
+  border-color: var(--color-brand);
+}
+
+fieldset {
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 14px;
+  background: var(--color-surface);
+}
+
+legend {
+  padding: 0 6px;
+  font-weight: 600;
+  color: var(--color-brand-deep);
+  font-size: 13px;
+  text-transform: none;
+}
+
+.number-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+}
+
+.metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.metrics span, .metrics strong {
+  padding: 4px 8px;
+  border-radius: 4px;
+  background: var(--color-brand-soft);
+  border: 1px solid var(--color-border);
+  color: var(--color-brand-deep);
+  font-size: 13px;
+}
+
+/* ==============================================================================
+   PESTAÑAS (TABS) (skill_design.md)
+   ============================================================================== */
+.module-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--color-border);
+  margin-bottom: 20px;
+  overflow-x: auto;
+}
+
+.module-tabs button {
+  border: 0;
+  background: transparent;
+  padding: 9px 14px;
+  color: var(--color-text-secondary);
+  font-family: var(--font-body);
+  font-weight: 500;
+  font-size: 14px;
+  border-bottom: 2px solid transparent;
+  border-radius: 4px 4px 0 0;
+  white-space: nowrap;
+}
+
+.module-tabs button:hover {
+  color: var(--color-text-primary);
+  background: var(--color-brand-soft);
+}
+
+.module-tabs button.active {
+  color: var(--color-brand);
+  border-bottom-color: var(--color-brand);
+  font-weight: 600;
+}
+
+/* ==============================================================================
+   MODAL Y PANELES CONTEXTUALES (skill_design.md)
+   ============================================================================== */
+.modal-overlay,
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: var(--color-modal-overlay);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  overflow-y: auto;
+}
+
+.modal-window,
+.modal-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  width: min(100%, 840px);
+  max-height: 90vh;
+  overflow-y: auto;
+  padding: 24px;
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.15), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
+  position: relative;
+  animation: modalScaleIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes modalScaleIn {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  border-bottom: 1px solid var(--color-border);
+  padding-bottom: 14px;
+  margin-bottom: 18px;
+}
+
+.modal-close-btn,
+.modal-close-button {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  width: 32px;
+  height: 32px;
+  font-size: 18px;
+  line-height: 1;
+  color: var(--color-text-secondary);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.modal-close-btn:hover,
+.modal-close-button:hover {
+  background: var(--color-brand-soft);
+  color: var(--color-text-primary);
+  border-color: var(--color-brand);
+}
+
+.detail-section h4 {
+  margin: 0 0 10px;
+  font-size: 14px;
+  color: var(--color-brand-deep);
+  font-weight: 600;
+}
+
+.detail-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 10px;
+}
+
+.stat-box {
+  background: var(--color-canvas);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 10px;
+  text-align: center;
+}
+
+.stat-box span {
+  display: block;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  font-weight: 500;
+}
+
+.stat-box strong {
+  display: block;
+  font-family: var(--font-display);
+  font-size: 20px;
+  color: var(--color-text-primary);
+  margin-top: 2px;
+}
+
+.stat-box.highlight {
+  background: var(--color-brand-soft);
+  border-color: var(--color-brand);
+}
+
+.stat-box.highlight strong {
+  color: var(--color-brand);
+}
+
+.diagram-box {
+  margin-top: 12px;
+  background: var(--color-canvas);
+  border: 1px dashed var(--color-border);
+  border-radius: 6px;
+  padding: 14px;
+  text-align: center;
+}
+
+.diagram-box img {
+  max-width: 100%;
+  max-height: 280px;
+  border-radius: 4px;
+  border: 1px solid var(--color-border);
+  object-fit: contain;
+}
+
+/* ==============================================================================
+   ESTADOS DE ALERTA Y MENSAJES (skill_design.md)
+   ============================================================================== */
+.error {
+  color: var(--color-danger);
+  font-size: 14px;
+}
+
+.notice {
+  background: rgba(188, 121, 31, 0.08);
+  border: 1px solid rgba(188, 121, 31, 0.3);
+  color: var(--color-warning);
+  padding: 10px 14px;
+  border-radius: 6px;
+  font-size: 14px;
+}
+
+/* ==============================================================================
+   PÁGINA DE LOGIN (skill_design.md)
+   ============================================================================== */
+.screen-message, .login-page {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background-color: var(--color-canvas);
+}
+
+.login-theme-bar {
+  width: min(100%, 400px);
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 10px;
+}
+
+.login-card {
+  width: min(100%, 400px);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 32px;
+  box-shadow: none;
+}
+
+.login-header {
+  text-align: center;
+  margin-bottom: 22px;
+}
+
+.login-icon-wrap {
+  width: 44px;
+  height: 44px;
+  border-radius: 6px;
+  background: var(--color-brand-soft);
+  border: 1px solid var(--color-border);
+  color: var(--color-brand);
+  display: inline-grid;
+  place-items: center;
+  margin-bottom: 12px;
+}
+
+.login-header h1 {
+  font-size: 24px;
+  margin: 6px 0 4px;
+  text-align: center;
+}
+
+.login-subtitle {
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  margin: 0;
+}
+
+.login-card label {
+  display: grid;
+  gap: 5px;
+  margin-bottom: 14px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+}
+
+.login-card input {
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 9px 12px;
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  font-family: var(--font-body);
+}
+
+.login-card input:focus {
+  outline: 2px solid var(--color-brand);
+  border-color: var(--color-brand);
+}
+
+/* ==============================================================================
+   SELECTOR DE TEMA Y COMPONENTES SECUNDARIOS
+   ============================================================================== */
+.theme-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  color: var(--color-text-primary);
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.theme-toggle-btn:hover {
+  background: var(--color-brand-soft);
+}
+
+.theme-toggle-label {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+/* ==============================================================================
+   ADAPTACIONES RESPONSIVAS
+   ============================================================================== */
+@media (max-width: 960px) {
+  .app-layout {
+    flex-direction: column;
+  }
+  .app-sidebar {
+    width: 100%;
+    min-width: 100%;
+    max-width: 100%;
+    height: auto;
+    position: relative;
+  }
+  .overview-split-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
