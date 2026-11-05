@@ -1,13 +1,19 @@
 import { supabase } from '../../../lib/supabase'
 import type { PerfilSerializado, Product, ProductDetailed } from '../types'
 
+export interface ProductoEliminarResult {
+  success: boolean
+  softDeleted?: boolean
+  message: string
+}
+
 export interface ProductoRepository {
   obtenerTodos(): Promise<Product[]>
   obtenerDetalles(): Promise<ProductDetailed[]>
   obtenerPorId(idProducto: number | string): Promise<Product | null>
   obtenerDetallePorId(idProducto: number | string): Promise<ProductDetailed | null>
   guardar(producto: Partial<Product>): Promise<Product>
-  eliminar(idProducto: number | string): Promise<void>
+  eliminar(idProducto: number | string): Promise<ProductoEliminarResult>
   obtenerSiguienteSku(): Promise<string>
 }
 
@@ -294,14 +300,66 @@ export class SupabaseProductoRepository implements ProductoRepository {
     }
   }
 
-  async eliminar(idProducto: number | string): Promise<void> {
+  async eliminar(idProducto: number | string): Promise<ProductoEliminarResult> {
+    // 1. Obtener datos previos del producto y su regla de empaque para posible limpieza de imagen en Storage
+    let imagenArmado: string | null = null
+    try {
+      const { data } = await supabase
+        .from('producto')
+        .select('*, regla_empaque(*)')
+        .eq('id_producto', idProducto)
+        .maybeSingle()
+      if (data) {
+        const rule = Array.isArray(data.regla_empaque) ? data.regla_empaque[0] : data.regla_empaque
+        if (rule?.imagen_armado_path) {
+          imagenArmado = rule.imagen_armado_path
+        }
+      }
+    } catch {
+      // Ignorar si falla lectura previa de Storage
+    }
+
+    // 2. Intentar eliminación directa en BD
     const { error } = await supabase
       .from('producto')
       .delete()
       .eq('id_producto', idProducto)
 
     if (error) {
+      // Si viola integridad referencial (código 23503: tiene movimientos en kardex, órdenes o etiquetas RFID)
+      if (error.code === '23503') {
+        const { error: updateErr } = await supabase
+          .from('producto')
+          .update({ activo: false })
+          .eq('id_producto', idProducto)
+
+        if (updateErr) {
+          throw new Error(`No se pudo desactivar el producto: ${updateErr.message}`)
+        }
+
+        return {
+          success: true,
+          softDeleted: true,
+          message: 'El producto cuenta con movimientos en kardex, órdenes o etiquetas RFID asociadas. Para preservar la trazabilidad contable, fue desactivado en lugar de eliminarse permanentemente.'
+        }
+      }
+
       throw new Error(`Error al eliminar producto: ${error.message}`)
+    }
+
+    // 3. Si se eliminó físicamente y tenía imagen adjunta en Storage, limpiar bucket
+    if (imagenArmado) {
+      try {
+        await supabase.storage.from('esquemas-empaque').remove([`patrones/${imagenArmado}`])
+      } catch {
+        // Ignorar si falla remoción de archivo huérfano
+      }
+    }
+
+    return {
+      success: true,
+      softDeleted: false,
+      message: 'Producto eliminado permanentemente del catálogo.'
     }
   }
 

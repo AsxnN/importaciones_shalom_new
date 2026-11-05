@@ -14,12 +14,14 @@ type ProductDetailModalProps = {
   product: Product | null
   onClose: () => void
   onPackagingUpdated?: () => void
+  onDeleteProduct?: (prod: Product) => void
 }
 
 export function ProductDetailModal({
   product,
   onClose,
-  onPackagingUpdated
+  onPackagingUpdated,
+  onDeleteProduct
 }: ProductDetailModalProps) {
   const [signedImageUrl, setSignedImageUrl] = useState<string | null>(null)
   const [loadingImage, setLoadingImage] = useState(false)
@@ -745,7 +747,21 @@ export function ProductDetailModal({
           </>
         )}
 
-        <div style={{ textAlign: 'right', marginTop: '22px', borderTop: '1px solid var(--color-border)', paddingTop: '16px' }}>
+        <div style={{ display: 'flex', justifyContent: onDeleteProduct && product ? 'space-between' : 'flex-end', alignItems: 'center', marginTop: '22px', borderTop: '1px solid var(--color-border)', paddingTop: '16px' }}>
+          {onDeleteProduct && product && (
+            <button
+              className="button secondary"
+              type="button"
+              style={{ color: 'var(--color-danger)', borderColor: 'rgba(179, 64, 42, 0.4)' }}
+              onClick={() => {
+                const target = product
+                onClose()
+                onDeleteProduct(target)
+              }}
+            >
+              Eliminar producto
+            </button>
+          )}
           <button className="button secondary" type="button" onClick={onClose}>
             Cerrar ficha
           </button>

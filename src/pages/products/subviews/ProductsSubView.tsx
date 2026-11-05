@@ -19,6 +19,7 @@ type Props = {
   onRefresh: () => void
   onError: (msg: string | null) => void
   onViewDetail: (prod: Product) => void
+  onDeleteProduct?: (prod: Product) => void
 }
 
 export function ProductsSubView({
@@ -27,7 +28,8 @@ export function ProductsSubView({
   loading,
   onRefresh,
   onError,
-  onViewDetail
+  onViewDetail,
+  onDeleteProduct
 }: Props) {
   const [showForm, setShowForm] = useState(false)
   const [editing, setEditing] = useState<Product | null>(null)
@@ -944,6 +946,20 @@ export function ProductsSubView({
                         <button className="btn-detail" type="button" onClick={() => onViewDetail(p)}>
                           Ver ficha
                         </button>
+                        {onDeleteProduct && (
+                          <button
+                            className="btn-detail"
+                            type="button"
+                            style={{
+                              color: 'var(--color-danger)',
+                              borderColor: 'rgba(179, 64, 42, 0.3)'
+                            }}
+                            onClick={() => onDeleteProduct(p)}
+                            title={`Eliminar producto ${p.sku}`}
+                          >
+                            Eliminar
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>
