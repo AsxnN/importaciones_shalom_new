@@ -13,6 +13,7 @@ import type {
 } from '../types/projections'
 
 export const LOCAL_STORAGE_ORDERS_KEY = 'shalom_projection_orders_v1'
+export const SNAPSHOT_STORAGE_PREFIX = 'shalom_order_snap_'
 
 const DEFAULT_ORDERS: ProjectionOrder[] = [
   {
@@ -125,8 +126,8 @@ const DEFAULT_TEMPLATES: ProjectionTemplate[] = [
   }
 ]
 
-// Ítems predeterminados de Importaciones / Store
-const DEFAULT_IMP_STO_ITEMS: ProjectionItem[] = [
+// Ítems predeterminados de Importaciones / Store (referencia catálogo)
+export const DEFAULT_IMP_STO_ITEMS: ProjectionItem[] = [
   {
     id_item: 1,
     id_plantilla: 1,
@@ -369,8 +370,8 @@ const DEFAULT_IMP_STO_ITEMS: ProjectionItem[] = [
   }
 ]
 
-// Ítems predeterminados de Construcción
-const DEFAULT_CONST_ITEMS: ProjectionItem[] = [
+// Ítems predeterminados de Construcción (referencia catálogo)
+export const DEFAULT_CONST_ITEMS: ProjectionItem[] = [
   { id_item: 101, id_plantilla: 2, id_producto: null, nombre_producto: 'CERAMICO GRIS 60X60 SRK66013', datos_meses: {}, promedio_manual: null, stock_manual: 1329, stock_redondeado_manual: 500, orden_fila: 1, activo: true },
   { id_item: 102, id_plantilla: 2, id_producto: null, nombre_producto: 'PORCELANATO GRIS CHISPEADO 60X60 SRK 76121 A1', datos_meses: {}, promedio_manual: null, stock_manual: 471, stock_redondeado_manual: 600, orden_fila: 2, activo: true },
   { id_item: 103, id_plantilla: 2, id_producto: null, nombre_producto: 'CERAMICO BLANCO 30X60 LLG36001', datos_meses: {}, promedio_manual: null, stock_manual: 720, stock_redondeado_manual: 400, orden_fila: 3, activo: true },
@@ -384,6 +385,38 @@ const DEFAULT_CONST_ITEMS: ProjectionItem[] = [
 ]
 
 export const projectionService = {
+  // Almacenamiento seguro e inmutable de snapshots de órdenes
+  getSnapshotFromStorage(id_orden?: number | null, numero_orden?: string | null): any {
+    try {
+      if (id_orden) {
+        const raw = localStorage.getItem(`${SNAPSHOT_STORAGE_PREFIX}${id_orden}`)
+        if (raw) return JSON.parse(raw)
+      }
+      if (numero_orden) {
+        const raw = localStorage.getItem(`${SNAPSHOT_STORAGE_PREFIX}${numero_orden}`)
+        if (raw) return JSON.parse(raw)
+      }
+    } catch (e) {
+      console.warn('Error reading snapshot from storage:', e)
+    }
+    return null
+  },
+
+  saveSnapshotToStorage(id_orden?: number | null, numero_orden?: string | null, snapshot?: any): void {
+    if (!snapshot) return
+    try {
+      const serialized = JSON.stringify(snapshot)
+      if (id_orden) {
+        localStorage.setItem(`${SNAPSHOT_STORAGE_PREFIX}${id_orden}`, serialized)
+      }
+      if (numero_orden) {
+        localStorage.setItem(`${SNAPSHOT_STORAGE_PREFIX}${numero_orden}`, serialized)
+      }
+    } catch (e) {
+      console.warn('Error saving snapshot to storage:', e)
+    }
+  },
+
   // 1. Obtener plantillas
   async getTemplates(): Promise<ProjectionTemplate[]> {
     try {
@@ -409,8 +442,21 @@ export const projectionService = {
             }
           } catch {}
         }
+
+        let months = tpl.columnas_meses || []
+        try {
+          const storedMonths = localStorage.getItem(`shalom_template_months_${tpl.id_plantilla}`)
+          if (storedMonths) {
+            const parsedMonths = JSON.parse(storedMonths)
+            if (Array.isArray(parsedMonths) && parsedMonths.length > 0) {
+              months = parsedMonths
+            }
+          }
+        } catch {}
+
         return {
           ...tpl,
+          columnas_meses: months,
           columnas_personalizadas: customCols
         }
       })
@@ -424,13 +470,25 @@ export const projectionService = {
             if (Array.isArray(parsed)) customCols = parsed
           }
         } catch {}
-        return { ...tpl, columnas_personalizadas: customCols }
+
+        let months = tpl.columnas_meses || []
+        try {
+          const storedMonths = localStorage.getItem(`shalom_template_months_${tpl.id_plantilla}`)
+          if (storedMonths) {
+            const parsedMonths = JSON.parse(storedMonths)
+            if (Array.isArray(parsedMonths) && parsedMonths.length > 0) {
+              months = parsedMonths
+            }
+          }
+        } catch {}
+
+        return { ...tpl, columnas_meses: months, columnas_personalizadas: customCols }
       })
     }
   },
 
   // 2. Obtener ítems de una plantilla
-  async getItems(id_plantilla: number, templateCodigo?: string): Promise<ProjectionItem[]> {
+  async getItems(id_plantilla: number, _templateCodigo?: string): Promise<ProjectionItem[]> {
     try {
       const { data, error } = await supabase
         .from('item_proyeccion')
@@ -440,10 +498,8 @@ export const projectionService = {
         .order('orden_fila', { ascending: true })
 
       if (error || !data || data.length === 0) {
-        if (templateCodigo === 'CONST' || id_plantilla === 2) {
-          return DEFAULT_CONST_ITEMS
-        }
-        return DEFAULT_IMP_STO_ITEMS
+        // Al ingresar por primera vez para hacer la proyección, debe iniciar vacía (sin productos pre-cargados)
+        return []
       }
 
       return data.map((item: any) => ({
@@ -459,10 +515,8 @@ export const projectionService = {
         activo: item.activo
       }))
     } catch {
-      if (templateCodigo === 'CONST' || id_plantilla === 2) {
-        return DEFAULT_CONST_ITEMS
-      }
-      return DEFAULT_IMP_STO_ITEMS
+      // Inicia vacía por defecto
+      return []
     }
   },
 
@@ -679,15 +733,16 @@ export const projectionService = {
   // 6. Agregar nueva columna de mes
   async addMonthColumn(
     id_plantilla: number,
-    currentMonths: string[],
+    currentMonths: string[] = [],
     newMonth: string
   ): Promise<{ success: boolean; error?: string }> {
     const cleanMonth = newMonth.trim().toUpperCase()
-    if (!cleanMonth || currentMonths.includes(cleanMonth)) {
+    const safeMonths = Array.isArray(currentMonths) ? currentMonths : []
+    if (!cleanMonth || safeMonths.includes(cleanMonth)) {
       return { success: false, error: 'El nombre de mes no es válido o ya existe.' }
     }
 
-    const updatedMonths = [...currentMonths, cleanMonth]
+    const updatedMonths = [...safeMonths, cleanMonth]
     try {
       const { error } = await supabase
         .from('plantilla_proyeccion')
@@ -697,11 +752,18 @@ export const projectionService = {
         })
         .eq('id_plantilla', id_plantilla)
 
-      if (error) return { success: false, error: error.message }
-      return { success: true }
+      if (error) {
+        console.warn('Supabase update plantilla_proyeccion failed, continuing locally:', error.message)
+      }
     } catch (err: any) {
-      return { success: false, error: err.message }
+      console.warn('Supabase update plantilla_proyeccion threw exception:', err)
     }
+
+    try {
+      localStorage.setItem(`shalom_template_months_${id_plantilla}`, JSON.stringify(updatedMonths))
+    } catch {}
+
+    return { success: true }
   },
 
   // 7. Agregar nuevo producto a la matriz
@@ -774,11 +836,12 @@ export const projectionService = {
         .eq('id_item', id_item)
 
       if (error) {
-        return { success: false, error: error.message }
+        console.warn('Advertencia DB al eliminar item de proyección (continuando en local):', error.message)
       }
       return { success: true }
     } catch (err: any) {
-      return { success: false, error: err.message }
+      console.warn('Excepción al eliminar item DB (continuando en local):', err?.message)
+      return { success: true }
     }
   },
 
@@ -901,7 +964,11 @@ export const projectionService = {
   // 10. GESTIÓN INTEGRAL DE ÓRDENES Y PROYECCIONES PERIÓDICAS
   async getOrders(): Promise<ProjectionOrder[]> {
     try {
-      const { data, error } = await supabase
+      let data: any = null
+      let error: any = null
+
+      // Intentar consulta con columnas extendidas (snapshot_proyeccion, descripcion, etc.)
+      const extRes = await supabase
         .from('orden_importacion')
         .select(`
           id_orden,
@@ -911,6 +978,10 @@ export const projectionService = {
           fecha_emision,
           tipo_contenedor,
           volumen_ocupado_m3,
+          descripcion,
+          total_items,
+          total_unidades,
+          snapshot_proyeccion,
           proveedor ( id_proveedor, razon_social ),
           detalle_orden (
             id_detalle,
@@ -935,6 +1006,49 @@ export const projectionService = {
         `)
         .order('fecha_emision', { ascending: false })
         .order('id_orden', { ascending: false })
+
+      if (!extRes.error) {
+        data = extRes.data
+      } else {
+        // Fallback a columnas base si el esquema remoto aún no tiene snapshot_proyeccion (código 42703)
+        const coreRes = await supabase
+          .from('orden_importacion')
+          .select(`
+            id_orden,
+            numero_orden,
+            id_proveedor,
+            estado,
+            fecha_emision,
+            tipo_contenedor,
+            volumen_ocupado_m3,
+            proveedor ( id_proveedor, razon_social ),
+            detalle_orden (
+              id_detalle,
+              id_orden,
+              id_producto,
+              cantidad_pedida,
+              subtotal_peso_kg,
+              subtotal_volumen_m3,
+              producto (
+                id_producto,
+                sku,
+                nombre,
+                regla_empaque (
+                  unidades_por_caja,
+                  cajas_por_camada,
+                  numero_camadas,
+                  cajas_por_camita,
+                  camitas_por_paleta
+                )
+              )
+            )
+          `)
+          .order('fecha_emision', { ascending: false })
+          .order('id_orden', { ascending: false })
+
+        data = coreRes.data
+        error = coreRes.error
+      }
 
       if (!error && data && data.length > 0) {
         const formatted: ProjectionOrder[] = data.map((ord: any) => {
@@ -1000,13 +1114,18 @@ export const projectionService = {
             }
           })
 
+          let finalEstado = (ord.estado as ProjectionOrderStatus) || 'BORRADOR'
+          if (ord.snapshot_proyeccion?.estado_operativo === 'FALTA_APROBACION') {
+            finalEstado = 'FALTA_APROBACION'
+          }
+
           return {
             id_orden: ord.id_orden,
             numero_orden: ord.numero_orden,
             descripcion: ord.descripcion || `Orden de importación ${ord.numero_orden}`,
             id_plantilla: ord.id_plantilla || 1,
             id_proveedor: ord.id_proveedor,
-            estado: (ord.estado as ProjectionOrderStatus) || 'BORRADOR',
+            estado: finalEstado,
             fecha_emision: ord.fecha_emision || new Date().toISOString().split('T')[0],
             tipo_contenedor: ord.tipo_contenedor || '40FT',
             volumen_ocupado_m3: ord.volumen_ocupado_m3 || null,
@@ -1026,6 +1145,68 @@ export const projectionService = {
             snapshot_proyeccion: ord.snapshot_proyeccion || null
           }
         })
+
+        // Fusionar robustamente con almacenamiento local y snapshots persistentes
+        const cachedRaw = localStorage.getItem(LOCAL_STORAGE_ORDERS_KEY)
+        let cachedList: ProjectionOrder[] = []
+        if (cachedRaw) {
+          try {
+            cachedList = JSON.parse(cachedRaw)
+            if (!Array.isArray(cachedList)) cachedList = []
+          } catch {}
+        }
+
+        for (const item of formatted) {
+          const matched = cachedList.find(
+            (c) => c.id_orden === item.id_orden || c.numero_orden === item.numero_orden
+          )
+          const dedicatedSnapshot = this.getSnapshotFromStorage(item.id_orden, item.numero_orden)
+          const mergedSnapshot =
+            item.snapshot_proyeccion ||
+            dedicatedSnapshot ||
+            matched?.snapshot_proyeccion ||
+            null
+
+          item.snapshot_proyeccion = mergedSnapshot
+
+          if (mergedSnapshot?.estado_operativo) {
+            item.estado = mergedSnapshot.estado_operativo
+          } else if (matched && matched.estado === 'FALTA_APROBACION' && item.estado === 'BORRADOR') {
+            item.estado = 'FALTA_APROBACION'
+          }
+
+          if (mergedSnapshot?.items && Array.isArray(mergedSnapshot.items)) {
+            item.total_items = mergedSnapshot.items.length
+          } else if (matched?.total_items) {
+            item.total_items = matched.total_items
+          }
+
+          if (matched?.total_unidades) {
+            item.total_unidades = matched.total_unidades
+          }
+
+          if (matched?.descripcion && item.descripcion?.startsWith('Orden de importación IMP')) {
+            item.descripcion = matched.descripcion
+          }
+        }
+
+        // Conservar órdenes locales que no estén presentes en el backend
+        const dbIds = new Set(formatted.map((o) => o.id_orden))
+        const dbNums = new Set(formatted.map((o) => o.numero_orden))
+        for (const localOrd of cachedList) {
+          if (!dbIds.has(localOrd.id_orden) && !dbNums.has(localOrd.numero_orden)) {
+            const snap =
+              localOrd.snapshot_proyeccion ||
+              this.getSnapshotFromStorage(localOrd.id_orden, localOrd.numero_orden)
+            formatted.push({
+              ...localOrd,
+              snapshot_proyeccion: snap,
+              estado: snap?.estado_operativo || localOrd.estado,
+              total_items: snap?.items?.length || localOrd.total_items
+            })
+          }
+        }
+
         localStorage.setItem(LOCAL_STORAGE_ORDERS_KEY, JSON.stringify(formatted))
         return formatted
       }
@@ -1039,7 +1220,17 @@ export const projectionService = {
       try {
         const parsed = JSON.parse(cached)
         if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed
+          return parsed.map((ord: ProjectionOrder) => {
+            const snap =
+              ord.snapshot_proyeccion ||
+              this.getSnapshotFromStorage(ord.id_orden, ord.numero_orden)
+            return {
+              ...ord,
+              snapshot_proyeccion: snap,
+              estado: snap?.estado_operativo || ord.estado,
+              total_items: snap?.items?.length || ord.total_items
+            }
+          })
         }
       } catch {
         // fallback a semillas
@@ -1074,23 +1265,47 @@ export const projectionService = {
     let newId = Date.now()
 
     try {
-      const { data, error } = await supabase
+      const extInsert = await supabase
         .from('orden_importacion')
         .insert({
           numero_orden: cleanNum,
           id_proveedor: payload.id_proveedor || null,
           tipo_contenedor: container,
           estado: status,
-          fecha_emision: emision
+          fecha_emision: emision,
+          descripcion: cleanDesc,
+          snapshot_proyeccion: payload.snapshot_proyeccion || {},
+          total_items: payload.items?.length || 0,
+          total_unidades: payload.items?.reduce((s, i) => s + (Number(i.cantidad_pedida) || 0), 0) || 0
         })
         .select('id_orden')
         .single()
 
-      if (!error && data?.id_orden) {
-        newId = data.id_orden
+      if (!extInsert.error && extInsert.data?.id_orden) {
+        newId = extInsert.data.id_orden
+      } else {
+        const coreInsert = await supabase
+          .from('orden_importacion')
+          .insert({
+            numero_orden: cleanNum,
+            id_proveedor: payload.id_proveedor || null,
+            tipo_contenedor: container,
+            estado: status,
+            fecha_emision: emision
+          })
+          .select('id_orden')
+          .single()
+
+        if (!coreInsert.error && coreInsert.data?.id_orden) {
+          newId = coreInsert.data.id_orden
+        }
       }
     } catch (err) {
       console.warn('Supabase insert failed, continuing with fallback:', err)
+    }
+
+    if (payload.snapshot_proyeccion) {
+      this.saveSnapshotToStorage(newId, cleanNum, payload.snapshot_proyeccion)
     }
 
     const newOrder: ProjectionOrder = {
@@ -1126,9 +1341,17 @@ export const projectionService = {
     id_orden: number,
     updates: Partial<ProjectionOrder>
   ): Promise<{ success: boolean; error?: string }> {
+    // 1. Guardar de inmediato en almacenamiento dedicado para garantizar persistencia absoluta
+    if (updates.snapshot_proyeccion) {
+      this.saveSnapshotToStorage(id_orden, updates.numero_orden, updates.snapshot_proyeccion)
+    }
+
+    // 2. Actualizar campos base en Supabase
     try {
       const dbPayload: any = {}
-      if (updates.estado) dbPayload.estado = updates.estado
+      if (updates.estado) {
+        dbPayload.estado = updates.estado === 'FALTA_APROBACION' ? 'BORRADOR' : updates.estado
+      }
       if (updates.tipo_contenedor) dbPayload.tipo_contenedor = updates.tipo_contenedor
       if (updates.volumen_ocupado_m3 !== undefined) dbPayload.volumen_ocupado_m3 = updates.volumen_ocupado_m3
       if (updates.fecha_emision) dbPayload.fecha_emision = updates.fecha_emision
@@ -1140,16 +1363,72 @@ export const projectionService = {
       console.warn('Supabase update failed, continuing with localStorage:', err)
     }
 
-    const currentOrders = await this.getOrders()
-    const updatedOrders = currentOrders.map((ord) =>
-      ord.id_orden === id_orden ? { ...ord, ...updates } : ord
-    )
-    localStorage.setItem(LOCAL_STORAGE_ORDERS_KEY, JSON.stringify(updatedOrders))
+    // 3. Actualizar campos extendidos si el esquema remoto cuenta con las columnas
+    try {
+      const extPayload: any = {}
+      if (updates.snapshot_proyeccion !== undefined) extPayload.snapshot_proyeccion = updates.snapshot_proyeccion
+      if (updates.total_items !== undefined) extPayload.total_items = updates.total_items
+      if (updates.total_unidades !== undefined) extPayload.total_unidades = updates.total_unidades
+      if (updates.descripcion !== undefined) extPayload.descripcion = updates.descripcion
+
+      if (Object.keys(extPayload).length > 0) {
+        await supabase.from('orden_importacion').update(extPayload).eq('id_orden', id_orden)
+      }
+    } catch {
+      // Ignorado si la columna no existe en el esquema remoto
+    }
+
+    // 4. Actualizar lista de órdenes en localStorage de forma atómica y segura
+    try {
+      const cachedRaw = localStorage.getItem(LOCAL_STORAGE_ORDERS_KEY)
+      let ordersList: ProjectionOrder[] = cachedRaw ? JSON.parse(cachedRaw) : []
+      if (!Array.isArray(ordersList)) ordersList = []
+
+      let found = false
+      ordersList = ordersList.map((ord) => {
+        if (ord.id_orden === id_orden || (updates.numero_orden && ord.numero_orden === updates.numero_orden)) {
+          found = true
+          return {
+            ...ord,
+            ...updates,
+            snapshot_proyeccion: updates.snapshot_proyeccion
+              ? { ...(ord.snapshot_proyeccion || {}), ...updates.snapshot_proyeccion }
+              : ord.snapshot_proyeccion
+          }
+        }
+        return ord
+      })
+
+      if (!found && updates.numero_orden) {
+        ordersList.push({
+          id_orden,
+          numero_orden: updates.numero_orden,
+          descripcion: updates.descripcion || `Orden ${updates.numero_orden}`,
+          id_plantilla: updates.id_plantilla || 1,
+          id_proveedor: updates.id_proveedor || null,
+          estado: updates.estado || 'BORRADOR',
+          fecha_emision: updates.fecha_emision || new Date().toISOString().split('T')[0],
+          tipo_contenedor: updates.tipo_contenedor || '40FT',
+          total_items: updates.total_items || 0,
+          total_unidades: updates.total_unidades || 0,
+          snapshot_proyeccion: updates.snapshot_proyeccion || null,
+          detalles: []
+        } as ProjectionOrder)
+      }
+
+      localStorage.setItem(LOCAL_STORAGE_ORDERS_KEY, JSON.stringify(ordersList))
+    } catch (e) {
+      console.warn('Error saving orders list to localStorage:', e)
+    }
 
     return { success: true }
   },
 
   async deleteOrder(id_orden: number): Promise<{ success: boolean; error?: string }> {
+    try {
+      localStorage.removeItem(`${SNAPSHOT_STORAGE_PREFIX}${id_orden}`)
+    } catch {}
+
     try {
       await supabase.from('detalle_orden').delete().eq('id_orden', id_orden)
       await supabase.from('orden_importacion').delete().eq('id_orden', id_orden)
@@ -1157,9 +1436,14 @@ export const projectionService = {
       console.warn('Supabase delete failed:', err)
     }
 
-    const currentOrders = await this.getOrders()
-    const updatedOrders = currentOrders.filter((ord) => ord.id_orden !== id_orden)
-    localStorage.setItem(LOCAL_STORAGE_ORDERS_KEY, JSON.stringify(updatedOrders))
+    try {
+      const cachedRaw = localStorage.getItem(LOCAL_STORAGE_ORDERS_KEY)
+      if (cachedRaw) {
+        const currentOrders: ProjectionOrder[] = JSON.parse(cachedRaw)
+        const updatedOrders = currentOrders.filter((ord) => ord.id_orden !== id_orden)
+        localStorage.setItem(LOCAL_STORAGE_ORDERS_KEY, JSON.stringify(updatedOrders))
+      }
+    } catch {}
 
     return { success: true }
   },
@@ -1405,10 +1689,42 @@ export const projectionService = {
           }
         }
 
-        // Productos del Excel que no coincidieron con la matriz
+        // Incorporar a la matriz productos del Excel que no estaban previamente
         Object.keys(productMonthTotals).forEach((k) => {
           if (!processedExcelKeys.has(k)) {
-            unmatchedProducts.push(rawProductNameMap[k] || k)
+            const rawName = (rawProductNameMap[k] || k).toUpperCase()
+            const monthMap = productMonthTotals[k]
+            const filledMonths: Record<string, number> = {}
+
+            chronologicalMonths.forEach((m) => {
+              const val = monthMap[m] || 0
+              filledMonths[m] = -Math.abs(Math.round(val))
+            })
+
+            const newItem: ProjectionItem = {
+              id_item: Date.now() + Math.floor(Math.random() * 100000) + updatedItems.length,
+              id_plantilla: template.id_plantilla,
+              id_producto: null,
+              nombre_producto: rawName,
+              datos_meses: filledMonths,
+              promedio_manual: null,
+              stock_manual: 0,
+              stock_redondeado_manual: null,
+              orden_fila: updatedItems.length + 1,
+              activo: true
+            }
+
+            updatedItems.push(newItem)
+            matchedCount++
+            processedExcelKeys.add(k)
+
+            if (previewRows.length < 15) {
+              previewRows.push({
+                producto: newItem.nombre_producto,
+                valoresMeses: filledMonths,
+                coincide: true
+              })
+            }
           }
         })
       }
@@ -1449,7 +1765,7 @@ export const projectionService = {
           if (targetItem) {
             matchedCount++
             targetItem.datos_meses = monthVals
-            if (previewRows.length < 12) {
+            if (previewRows.length < 15) {
               previewRows.push({
                 producto: targetItem.nombre_producto,
                 valoresMeses: monthVals,
@@ -1457,7 +1773,28 @@ export const projectionService = {
               })
             }
           } else {
-            unmatchedProducts.push(rawProdName.trim())
+            // Incorporar nuevo producto desde la matriz de Excel
+            const newItem: ProjectionItem = {
+              id_item: Date.now() + Math.floor(Math.random() * 100000) + updatedItems.length + r,
+              id_plantilla: template.id_plantilla,
+              id_producto: null,
+              nombre_producto: rawProdName.trim().toUpperCase(),
+              datos_meses: monthVals,
+              promedio_manual: null,
+              stock_manual: 0,
+              stock_redondeado_manual: null,
+              orden_fila: updatedItems.length + 1,
+              activo: true
+            }
+            updatedItems.push(newItem)
+            matchedCount++
+            if (previewRows.length < 15) {
+              previewRows.push({
+                producto: newItem.nombre_producto,
+                valoresMeses: monthVals,
+                coincide: true
+              })
+            }
           }
         }
       } else {

@@ -17,8 +17,6 @@ export function OrdersListSubView({
   onSelectOrder,
   onCreateOrderClick,
   onDeleteOrder,
-  onOpenReceptions,
-  onOpenPackingPlan,
   onBack,
   loading
 }: OrdersListSubViewProps) {
@@ -31,9 +29,10 @@ export function OrdersListSubView({
   const metrics = useMemo(() => {
     const total = orders.length
     const borrador = orders.filter((o) => o.estado === 'BORRADOR').length
-    const transito = orders.filter((o) => o.estado === 'TRANSITO').length
-    const recibida = orders.filter((o) => o.estado === 'RECIBIDA').length
-    return { total, borrador, transito, recibida }
+    const faltaAprobacion = orders.filter((o) => o.estado === 'FALTA_APROBACION').length
+    const enCamino = orders.filter((o) => o.estado === 'TRANSITO').length
+    const recepcionada = orders.filter((o) => o.estado === 'RECIBIDA').length
+    return { total, borrador, faltaAprobacion, enCamino, recepcionada }
   }, [orders])
 
   // Filtrado reactivo de órdenes
@@ -91,10 +90,10 @@ export function OrdersListSubView({
               fontWeight: 600
             }}
           >
-            Borrador (en cálculo)
+            Borrador
           </span>
         )
-      case 'TRANSITO':
+      case 'FALTA_APROBACION':
         return (
           <span
             style={{
@@ -107,7 +106,23 @@ export function OrdersListSubView({
               fontWeight: 600
             }}
           >
-            En tránsito marítimo
+            Falta aprobación
+          </span>
+        )
+      case 'TRANSITO':
+        return (
+          <span
+            style={{
+              background: 'var(--color-brand-soft)',
+              color: 'var(--color-brand)',
+              border: '1px solid var(--color-border)',
+              padding: '2px 8px',
+              borderRadius: '4px',
+              fontSize: '12px',
+              fontWeight: 600
+            }}
+          >
+            Aprobado y en camino
           </span>
         )
       case 'RECIBIDA':
@@ -123,7 +138,7 @@ export function OrdersListSubView({
               fontWeight: 600
             }}
           >
-            Recibida en almacén
+            Recepcionado completamente
           </span>
         )
       default:
@@ -176,7 +191,7 @@ export function OrdersListSubView({
       <div
         style={{
           display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
           gap: '14px'
         }}
       >
@@ -208,13 +223,13 @@ export function OrdersListSubView({
           }}
         >
           <span style={{ fontSize: '13px', color: 'var(--color-text-secondary)', display: 'block' }}>
-            En proyección (Borrador)
+            En borrador
           </span>
           <strong style={{ fontSize: '26px', color: 'var(--color-text-primary)' }}>
             {metrics.borrador}
           </strong>
           <span style={{ fontSize: '12px', color: 'var(--color-text-secondary)', display: 'block' }}>
-            en simulación de matriz
+            en elaboración
           </span>
         </div>
 
@@ -227,13 +242,13 @@ export function OrdersListSubView({
           }}
         >
           <span style={{ fontSize: '13px', color: 'var(--color-text-secondary)', display: 'block' }}>
-            En tránsito marítimo
+            Falta aprobación
           </span>
           <strong style={{ fontSize: '26px', color: 'var(--color-warning)' }}>
-            {metrics.transito}
+            {metrics.faltaAprobacion}
           </strong>
           <span style={{ fontSize: '12px', color: 'var(--color-text-secondary)', display: 'block' }}>
-            esperando recepción en muelle
+            proyección terminada
           </span>
         </div>
 
@@ -246,13 +261,32 @@ export function OrdersListSubView({
           }}
         >
           <span style={{ fontSize: '13px', color: 'var(--color-text-secondary)', display: 'block' }}>
-            Recibidas en muelle
+            Aprobado y en camino
           </span>
-          <strong style={{ fontSize: '26px', color: 'var(--color-success)' }}>
-            {metrics.recibida}
+          <strong style={{ fontSize: '26px', color: 'var(--color-brand)' }}>
+            {metrics.enCamino}
           </strong>
           <span style={{ fontSize: '12px', color: 'var(--color-text-secondary)', display: 'block' }}>
-            completadas y conciliadas
+            en tránsito marítimo
+          </span>
+        </div>
+
+        <div
+          style={{
+            background: 'var(--color-surface)',
+            border: '1px solid var(--color-border)',
+            padding: '16px',
+            borderRadius: '6px'
+          }}
+        >
+          <span style={{ fontSize: '13px', color: 'var(--color-text-secondary)', display: 'block' }}>
+            Recepcionado completamente
+          </span>
+          <strong style={{ fontSize: '26px', color: 'var(--color-success)' }}>
+            {metrics.recepcionada}
+          </strong>
+          <span style={{ fontSize: '12px', color: 'var(--color-text-secondary)', display: 'block' }}>
+            conforme en muelle
           </span>
         </div>
       </div>
@@ -293,7 +327,7 @@ export function OrdersListSubView({
 
         {/* Pestañas de estado en sentence case */}
         <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-          {(['TODAS', 'BORRADOR', 'TRANSITO', 'RECIBIDA'] as const).map((st) => (
+          {(['TODAS', 'BORRADOR', 'FALTA_APROBACION', 'TRANSITO', 'RECIBIDA'] as const).map((st) => (
             <button
               key={st}
               type="button"
@@ -304,9 +338,11 @@ export function OrdersListSubView({
                 ? 'Todas las órdenes'
                 : st === 'BORRADOR'
                 ? 'Borradores'
+                : st === 'FALTA_APROBACION'
+                ? 'Falta aprobación'
                 : st === 'TRANSITO'
-                ? 'En tránsito'
-                : 'Recibidas'}
+                ? 'Aprobado y en camino'
+                : 'Recepcionado'}
             </button>
           ))}
         </div>
@@ -347,7 +383,6 @@ export function OrdersListSubView({
             </thead>
             <tbody>
               {filteredOrders.map((ord) => {
-                const isDraft = ord.estado === 'BORRADOR'
                 return (
                   <tr
                     key={ord.id_orden}
@@ -404,7 +439,7 @@ export function OrdersListSubView({
                       ) : null}
                       {ord.total_bultos ? (
                         <div style={{ fontSize: '11px', color: 'var(--color-brand)', fontWeight: 600, marginTop: '2px' }}>
-                          📦 {ord.total_bultos} paleta(s) ({ord.total_paletas_completas || 0} comp.
+                          {ord.total_bultos} paleta(s) ({ord.total_paletas_completas || 0} comp.
                           {ord.total_puchos ? ` + ${ord.total_puchos} pucho` : ''})
                         </div>
                       ) : null}
@@ -419,43 +454,21 @@ export function OrdersListSubView({
                           type="button"
                           className="button primary button-sm"
                           onClick={() => onSelectOrder(ord)}
-                          title="Abrir la matriz tipo Excel para ver o modificar fórmulas y consumos"
+                          title="Abrir la matriz de cálculo de esta orden"
                         >
                           Abrir matriz
                         </button>
 
-                        {onOpenPackingPlan && (
-                          <button
-                            type="button"
-                            className="button secondary button-sm"
-                            onClick={() => onOpenPackingPlan(ord)}
-                            title="Ver desglose físico de paletas y descargar rótulos Excel para muelle"
-                          >
-                            📦 Paletas
-                          </button>
-                        )}
-
-                        {isDraft ? (
-                          <button
-                            type="button"
-                            className="button secondary button-sm"
-                            style={{ color: 'var(--color-danger)' }}
-                            onClick={(e) => handleDelete(e, ord.id_orden, ord.numero_orden)}
-                            disabled={deletingId === ord.id_orden}
-                            title="Eliminar borrador de orden"
-                          >
-                            {deletingId === ord.id_orden ? '...' : 'Eliminar'}
-                          </button>
-                        ) : onOpenReceptions ? (
-                          <button
-                            type="button"
-                            className="button secondary button-sm"
-                            onClick={onOpenReceptions}
-                            title="Ver estado de recepción en muelle (Módulo 04)"
-                          >
-                            Recepción
-                          </button>
-                        ) : null}
+                        <button
+                          type="button"
+                          className="button secondary button-sm"
+                          style={{ color: 'var(--color-danger)' }}
+                          onClick={(e) => handleDelete(e, ord.id_orden, ord.numero_orden)}
+                          disabled={deletingId === ord.id_orden}
+                          title="Eliminar proyección de la lista"
+                        >
+                          {deletingId === ord.id_orden ? 'Eliminando...' : 'Eliminar'}
+                        </button>
                       </div>
                     </td>
                   </tr>

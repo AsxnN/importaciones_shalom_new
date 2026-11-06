@@ -120,7 +120,7 @@ export interface ColumnEquationConfig {
   format?: ColumnDisplayFormat
 }
 
-export type ProjectionOrderStatus = 'BORRADOR' | 'TRANSITO' | 'RECIBIDA'
+export type ProjectionOrderStatus = 'BORRADOR' | 'FALTA_APROBACION' | 'TRANSITO' | 'RECIBIDA'
 
 export interface PalletPackingBreakdown {
   unidades_por_caja: number
@@ -161,9 +161,13 @@ export interface ProjectionOrderSnapshot {
   items?: ProjectionItem[]
   calculatedRows?: CalculatedProjectionRow[]
   customColumns?: CustomProjectionColumn[]
+  warehousePrefix?: string
   total_paletas_completas?: number
   total_puchos?: number
   total_bultos?: number
+  approval_summary?: any[]
+  isLocked?: boolean
+  fecha_aprobacion?: string
 }
 
 export interface ProjectionOrder {
@@ -181,6 +185,9 @@ export interface ProjectionOrder {
   total_paletas_completas?: number
   total_puchos?: number
   total_bultos?: number
+  approval_summary?: any[]
+  isLocked?: boolean
+  fecha_aprobacion?: string
   proveedor?: {
     id_proveedor: number
     razon_social: string

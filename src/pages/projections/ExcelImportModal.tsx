@@ -211,13 +211,13 @@ export function ExcelImportModal({
                 }}
               >
                 <span style={{ fontSize: '12px', color: 'var(--color-brand-deep)', display: 'block' }}>
-                  Productos coincidentes
+                  Total productos
                 </span>
                 <strong style={{ fontSize: '20px', color: 'var(--color-brand)' }}>
-                  {importResult.matchedCount} de {items.length}
+                  {parsedItems?.length || importResult.matchedCount}
                 </strong>
                 <span style={{ fontSize: '12px', color: 'var(--color-text-secondary)', display: 'block' }}>
-                  vinculados automáticamente
+                  listos para incorporar a la matriz
                 </span>
               </div>
 

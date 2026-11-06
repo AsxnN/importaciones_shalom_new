@@ -45,6 +45,88 @@ export interface OrderPackingPlan {
   etiquetas_reserva: PalletTagItem[]
 }
 
+export interface PuchoConsolidationItem {
+  id_producto: number
+  sku: string
+  nombre: string
+  cajas_existentes: number
+  tag_existente: string
+  ubicacion_existente: string
+  cajas_nuevas: number
+  tag_nuevo: string
+  cajas_por_paleta: number
+  total_cajas: number
+  tipo_caso: 'CASO_1_PUCHO' | 'CASO_2_COMPLETO' | 'CASO_3_COMPLETO_MAS_PUCHO'
+  titulo_caso: string
+  instruccion: string
+  badge_texto: string
+  badge_color: string
+}
+
+/**
+ * Obtener todos los números correlativos reservados en órdenes de importación activas
+ * (órdenes en BORRADOR, FALTA_APROBACION o TRANSITO).
+ * Si una orden ya está en RECIBIDA, sus códigos ya no están en reserva y pueden reciclarse si se vacían.
+ */
+export function getReservedTagsFromAllOrders(cleanPrefix: string, excludeOrderNumber?: string): Set<number> {
+  const reserved = new Set<number>()
+  const prefixUpper = (cleanPrefix || 'IMP').trim().toUpperCase()
+
+  const inspectPlan = (plan: any) => {
+    if (!plan) return
+    if (Array.isArray(plan.etiquetas_bultos)) {
+      for (const item of plan.etiquetas_bultos) {
+        if (item?.uid_tag && item.uid_tag.startsWith(prefixUpper)) {
+          const numStr = item.uid_tag.slice(prefixUpper.length).replace(/\D/g, '')
+          if (numStr) reserved.add(parseInt(numStr, 10))
+        }
+      }
+    }
+    if (Array.isArray(plan.etiquetas_reserva)) {
+      for (const item of plan.etiquetas_reserva) {
+        if (item?.uid_tag && item.uid_tag.startsWith(prefixUpper)) {
+          const numStr = item.uid_tag.slice(prefixUpper.length).replace(/\D/g, '')
+          if (numStr) reserved.add(parseInt(numStr, 10))
+        }
+      }
+    }
+  }
+
+  try {
+    // 1. Revisar lista principal en localStorage
+    const cachedRaw = localStorage.getItem('shalom_projection_orders_v1')
+    if (cachedRaw) {
+      const cachedOrders = JSON.parse(cachedRaw)
+      if (Array.isArray(cachedOrders)) {
+        for (const ord of cachedOrders) {
+          if (excludeOrderNumber && ord.numero_orden === excludeOrderNumber) continue
+          // Las órdenes recibidas ya completaron sus códigos; no bloquean la bolsa libre
+          if (ord.estado === 'RECIBIDA') continue
+          inspectPlan(ord.snapshot_proyeccion?.packing_plan)
+        }
+      }
+    }
+
+    // 2. Revisar snapshots dedicados shalom_order_snap_*
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i)
+      if (key && key.startsWith('shalom_order_snap_')) {
+        try {
+          const rawSnap = localStorage.getItem(key)
+          if (rawSnap) {
+            const snap = JSON.parse(rawSnap)
+            if (excludeOrderNumber && snap.numero_orden === excludeOrderNumber) continue
+            if (snap.estado === 'RECIBIDA' || snap.estado_operativo === 'RECIBIDA') continue
+            inspectPlan(snap.packing_plan)
+          }
+        } catch {}
+      }
+    }
+  } catch {}
+
+  return reserved
+}
+
 export const packingListService = {
   // 1. Obtener reglas de empaque enriquecidas de la base de datos
   async getProductsPackingRules(): Promise<Map<number, { unidades_por_caja: number; cajas_por_paleta: number }>> {
@@ -88,10 +170,13 @@ export const packingListService = {
   // 2. Obtener lote de tags correlativos disponibles con el prefijo dado (excluyendo tags físicos y pre-asignados a otras órdenes)
   async getAvailableTagBatch(prefix: string, countNeeded: number, currentOrderNumber?: string): Promise<string[]> {
     const cleanPrefix = (prefix || 'IMP').trim().toUpperCase()
-    const occupied = new Set<number>()
+    
+    // Obtener códigos reservados de todas las órdenes activas en tránsito o borrador
+    const reservedFromOrders = getReservedTagsFromAllOrders(cleanPrefix, currentOrderNumber)
+    const occupied = new Set<number>(reservedFromOrders)
 
     try {
-      // A. Tags físicamente activos en etiqueta_rfid
+      // Tags físicamente activos en etiqueta_rfid
       const { data: tags } = await supabase
         .from('etiqueta_rfid')
         .select('uid_tag, estado')
@@ -104,55 +189,6 @@ export const packingListService = {
             if (numStr) occupied.add(parseInt(numStr, 10))
           }
         }
-      }
-
-      // B. Tags ya separados y reservados en otras órdenes de importación activas (en tránsito o borrador)
-      // 1. Revisar en localStorage primero
-      try {
-        const cachedRaw = localStorage.getItem('shalom_projection_orders_v1')
-        if (cachedRaw) {
-          const cachedOrders = JSON.parse(cachedRaw)
-          if (Array.isArray(cachedOrders)) {
-            for (const ord of cachedOrders) {
-              if (currentOrderNumber && ord.numero_orden === currentOrderNumber) {
-                continue
-              }
-              const plan = ord.snapshot_proyeccion?.packing_plan
-              if (plan?.etiquetas_bultos && Array.isArray(plan.etiquetas_bultos)) {
-                for (const item of plan.etiquetas_bultos) {
-                  if (item.uid_tag && item.uid_tag.startsWith(cleanPrefix)) {
-                    const numStr = item.uid_tag.slice(cleanPrefix.length).replace(/\D/g, '')
-                    if (numStr) occupied.add(parseInt(numStr, 10))
-                  }
-                }
-              }
-              if (plan?.etiquetas_reserva && Array.isArray(plan.etiquetas_reserva)) {
-                for (const item of plan.etiquetas_reserva) {
-                  if (item.uid_tag && item.uid_tag.startsWith(cleanPrefix)) {
-                    const numStr = item.uid_tag.slice(cleanPrefix.length).replace(/\D/g, '')
-                    if (numStr) occupied.add(parseInt(numStr, 10))
-                  }
-                }
-              }
-            }
-          }
-        }
-      } catch {
-        // Ignorar error al leer de localStorage
-      }
-
-      // 2. Intentar consultar en Supabase si la columna existe
-      try {
-        const { data: orders } = await supabase
-          .from('orden_importacion')
-          .select('numero_orden')
-          .in('estado', ['TRANSITO', 'BORRADOR'])
-
-        if (orders && orders.length > 0) {
-          // Órdenes activas en base de datos
-        }
-      } catch {
-        // En caso de que falle la consulta remota
       }
     } catch (err) {
       console.warn('Error al verificar tags correlativos ocupados:', err)
@@ -491,5 +527,157 @@ export const packingListService = {
     // Descargar el archivo
     const safeNum = plan.numero_orden.replace(/[^A-Za-z0-9_-]/g, '_')
     XLSX.writeFile(wb, `Packing_List_${safeNum}_Paletas_Shalom.xlsx`)
+  },
+
+  // 5. Detectar si existen puchos activos en el almacén para los productos del plan de empaque
+  async detectWarehousePuchosForPlan(
+    productos: ProductPackingSummary[],
+    _prefijoAlmacen?: string
+  ): Promise<PuchoConsolidationItem[]> {
+    const puchoProds = productos.filter((p) => p.cajas_pucho > 0)
+    if (puchoProds.length === 0) return []
+
+    const puchoProdIds = puchoProds.map((p) => p.id_producto)
+    const consolidations: PuchoConsolidationItem[] = []
+
+    try {
+      // 1. Consultar en Supabase etiquetas activas de tipo PUCHO para estos productos
+      const { data: dbPuchos, error } = await supabase
+        .from('etiqueta_rfid')
+        .select(`
+          id_etiqueta,
+          uid_tag,
+          id_producto,
+          cantidad_paquetes,
+          cantidad_actual,
+          tipo_paleta,
+          estado,
+          id_celda,
+          celda:id_celda ( codigo_ubicacion )
+        `)
+        .in('id_producto', puchoProdIds)
+        .eq('tipo_paleta', 'PUCHO')
+        .eq('estado', 'ACTIVA')
+
+      const foundMap = new Map<number, any>()
+      if (!error && dbPuchos) {
+        for (const item of dbPuchos) {
+          if (!foundMap.has(item.id_producto)) {
+            foundMap.set(item.id_producto, item)
+          }
+        }
+      }
+
+      // 2. Fallback de localStorage si no hay en BD o para modo local
+      if (foundMap.size < puchoProds.length) {
+        try {
+          for (let i = 0; i < localStorage.length; i++) {
+            const k = localStorage.key(i)
+            if (k && k.startsWith('shalom_wms_racks_pallets_')) {
+              const raw = localStorage.getItem(k)
+              if (raw) {
+                const list = JSON.parse(raw)
+                if (Array.isArray(list)) {
+                  for (const p of list) {
+                    if (
+                      p.id_producto &&
+                      puchoProdIds.includes(p.id_producto) &&
+                      p.tipo_paleta === 'PUCHO' &&
+                      p.estado === 'ACTIVA' &&
+                      !foundMap.has(p.id_producto)
+                    ) {
+                      foundMap.set(p.id_producto, p)
+                    }
+                  }
+                }
+              }
+            }
+          }
+        } catch {}
+      }
+
+      // 3. Procesar cada producto que tenga un pucho preexistente
+      for (const prod of puchoProds) {
+        const existing = foundMap.get(prod.id_producto)
+        if (!existing) continue
+
+        const cajasExistentes = Number(existing.cantidad_paquetes) || 1
+        const tagExistente = existing.uid_tag || 'Sin Tag'
+        const celdaRaw = Array.isArray(existing.celda) ? existing.celda[0] : existing.celda
+        const ubicacionExistente = celdaRaw?.codigo_ubicacion
+          ? celdaRaw.codigo_ubicacion
+          : existing.id_celda
+          ? `Celda ${existing.id_celda}`
+          : 'Zona Campo / Piso'
+        const cajasNuevas = prod.cajas_pucho
+        const tagNuevo = prod.paletas.find((p) => p.tipo === 'PUCHO')?.uid_tag || 'Por asignar'
+        const cajasPorPaleta = Math.max(1, prod.cajas_por_paleta)
+        const totalCajas = cajasExistentes + cajasNuevas
+
+        if (totalCajas < cajasPorPaleta) {
+          // Caso 1: Sigue siendo 1 pucho consolidado
+          consolidations.push({
+            id_producto: prod.id_producto,
+            sku: prod.sku,
+            nombre: prod.nombre,
+            cajas_existentes: cajasExistentes,
+            tag_existente: tagExistente,
+            ubicacion_existente: ubicacionExistente,
+            cajas_nuevas: cajasNuevas,
+            tag_nuevo: tagNuevo,
+            cajas_por_paleta: cajasPorPaleta,
+            total_cajas: totalCajas,
+            tipo_caso: 'CASO_1_PUCHO',
+            titulo_caso: 'Consolidación en 1 único pucho',
+            instruccion: `Al descargar, transferir las ${cajasNuevas} cajas que llegan hacia la paleta existente ${tagExistente}. Resultará en 1 único pucho consolidado de ${totalCajas} de ${cajasPorPaleta} cajas. El código previsto ${tagNuevo} quedará libre.`,
+            badge_texto: `1 Pucho resultante (${totalCajas}/${cajasPorPaleta} cajas)`,
+            badge_color: 'var(--color-warning)'
+          })
+        } else if (totalCajas === cajasPorPaleta) {
+          // Caso 2: Se completa 1 paleta completa estándar
+          consolidations.push({
+            id_producto: prod.id_producto,
+            sku: prod.sku,
+            nombre: prod.nombre,
+            cajas_existentes: cajasExistentes,
+            tag_existente: tagExistente,
+            ubicacion_existente: ubicacionExistente,
+            cajas_nuevas: cajasNuevas,
+            tag_nuevo: tagNuevo,
+            cajas_por_paleta: cajasPorPaleta,
+            total_cajas: totalCajas,
+            tipo_caso: 'CASO_2_COMPLETO',
+            titulo_caso: 'Se completa 1 paleta estándar entera',
+            instruccion: `Al descargar, unir las ${cajasNuevas} cajas nuevas con las ${cajasExistentes} existentes en ${tagExistente}. La paleta pasará de PUCHO a COMPLETO con ${cajasPorPaleta} cajas exactas. ¡Quedarán 0 puchos en el almacén!`,
+            badge_texto: 'Paleta completa (0 puchos)',
+            badge_color: 'var(--color-success)'
+          })
+        } else {
+          // Caso 3: 1 paleta completa + 1 pucho remanente
+          const remanente = totalCajas - cajasPorPaleta
+          consolidations.push({
+            id_producto: prod.id_producto,
+            sku: prod.sku,
+            nombre: prod.nombre,
+            cajas_existentes: cajasExistentes,
+            tag_existente: tagExistente,
+            ubicacion_existente: ubicacionExistente,
+            cajas_nuevas: cajasNuevas,
+            tag_nuevo: tagNuevo,
+            cajas_por_paleta: cajasPorPaleta,
+            total_cajas: totalCajas,
+            tipo_caso: 'CASO_3_COMPLETO_MAS_PUCHO',
+            titulo_caso: '1 paleta completa + 1 pucho remanente',
+            instruccion: `Al descargar, completar la paleta existente ${tagExistente} hasta ${cajasPorPaleta} cajas (pasa a COMPLETO). El remanente de ${remanente} cajas quedará estibado en la paleta ${tagNuevo} como único pucho del producto.`,
+            badge_texto: `1 Completa + 1 Pucho (${remanente} cajas)`,
+            badge_color: 'var(--color-brand)'
+          })
+        }
+      }
+    } catch (err) {
+      console.warn('Error al detectar puchos existentes para consolidación:', err)
+    }
+
+    return consolidations
   }
 }

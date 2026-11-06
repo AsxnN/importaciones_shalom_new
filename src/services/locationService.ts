@@ -1,5 +1,6 @@
 import { supabase } from '../lib/supabase'
 import type { LocationType, PalletRecord, RackCell, WarehouseLane } from '../types/locations'
+import { getReservedTagsFromAllOrders } from './packingListService'
 
 // Clave para almacenamiento local de contingencia/demo
 const STORAGE_PREFIX = 'shalom_wms_racks_'
@@ -1022,8 +1023,8 @@ export const locationService = {
     const transferUnits = Number(origTag.cantidad_actual) || (Number(origTag.cantidad_paquetes || 1) * uCaja)
     const transferBoxes = Number(origTag.cantidad_paquetes) || Math.max(1, Math.floor(transferUnits / uCaja))
 
-    // D. Calcular el menor código RFID libre en destino (rellenando huecos de menor a mayor)
-    const occupiedNumbers = new Set<number>()
+    // D. Calcular el menor código RFID libre en destino (rellenando huecos de menor a mayor y excluyendo reservas de Packing List)
+    const occupiedNumbers = new Set<number>(getReservedTagsFromAllOrders(prefix))
     const vaciaTagByUid = new Map<string, any>()
 
     try {
@@ -1594,18 +1595,8 @@ export const locationService = {
     return false
   },
 
-  // Sugerir el menor código RFID libre (rellenando huecos de menor a mayor)
+  // Sugerir el menor código RFID libre (rellenando huecos de menor a mayor y excluyendo reservas activas de Packing List)
   async suggestNextRfidTag(warehouseId: number, prefijo?: string): Promise<string> {
-    // 1. Intentar primero invocar la RPC oficial en Supabase (sugerir_uid_rfid)
-    try {
-      const { data: rpcTag, error: rpcErr } = await supabase.rpc('sugerir_uid_rfid', {
-        p_id_almacen: warehouseId
-      })
-      if (!rpcErr && rpcTag) {
-        return rpcTag
-      }
-    } catch {}
-
     let prefix = prefijo?.trim().toUpperCase()
     if (!prefix) {
       try {
@@ -1619,14 +1610,33 @@ export const locationService = {
     }
     prefix = prefix || `ALM${warehouseId}`
 
+    // 1. Obtener todos los códigos reservados en órdenes de importación activas (en tránsito o borrador)
+    const reservedNumbers = getReservedTagsFromAllOrders(prefix)
+
+    // 2. Intentar primero invocar la RPC oficial en Supabase (sugerir_uid_rfid)
     try {
-      // 2. Fallback de cliente: obtener todas las etiquetas con este prefijo
+      const { data: rpcTag, error: rpcErr } = await supabase.rpc('sugerir_uid_rfid', {
+        p_id_almacen: warehouseId
+      })
+      if (!rpcErr && rpcTag) {
+        // Verificar que la sugerencia de la BD no colisione con una reserva activa de Packing List
+        const numStr = rpcTag.slice(prefix.length).replace(/\D/g, '')
+        const num = numStr ? parseInt(numStr, 10) : 0
+        if (!reservedNumbers.has(num)) {
+          return rpcTag
+        }
+      }
+    } catch {}
+
+    try {
+      // 3. Fallback inteligente de cliente: obtener todas las etiquetas con este prefijo
       const { data: tags } = await supabase
         .from('etiqueta_rfid')
         .select('uid_tag, estado')
         .ilike('uid_tag', `${prefix}%`)
 
-      const occupied = new Set<number>()
+      // Inicializar con los números ya reservados en packing lists en camino
+      const occupied = new Set<number>(reservedNumbers)
       if (tags && tags.length > 0) {
         for (const t of tags) {
           if (t.estado === 'ACTIVA') {
@@ -1636,7 +1646,7 @@ export const locationService = {
         }
       }
 
-      // 2. Buscar de menor a mayor el primer hueco libre (N=1, 2, 3...)
+      // Buscar de menor a mayor el primer hueco libre (N=1, 2, 3...)
       let nextNum = 1
       while (occupied.has(nextNum)) {
         nextNum++
@@ -1645,7 +1655,11 @@ export const locationService = {
       return `${prefix}${nextNum.toString().padStart(5, '0')}`
     } catch {}
 
-    return `${prefix}00001`
+    let fallbackNum = 1
+    while (reservedNumbers.has(fallbackNum)) {
+      fallbackNum++
+    }
+    return `${prefix}${fallbackNum.toString().padStart(5, '0')}`
   },
 
   // Resetear y limpiar todos los datos operativos de prueba a 0

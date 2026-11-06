@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { supabase } from '../lib/supabase'
 import { projectionService } from '../services/projectionService'
 import {
   projectionFormulaEngine,
@@ -9,8 +10,14 @@ import { packingListService, type OrderPackingPlan } from '../services/packingLi
 import { OrdersListSubView } from './projections/OrdersListSubView'
 import { NewOrderModal } from './projections/NewOrderModal'
 import { ExcelImportModal } from './projections/ExcelImportModal'
+import { PackingListSubView } from './projections/PackingListSubView'
+import {
+  ProjectionSummaryApprovalSubView,
+  type ApprovedItemRow
+} from './projections/ProjectionSummaryApprovalSubView'
 import type {
   CalculableColumnKey,
+  CalculatedProjectionRow,
   ColumnDisplayFormat,
   ColumnEquationConfig,
   CustomProjectionColumn,
@@ -43,10 +50,13 @@ interface ProjectionsPageProps {
 }
 
 export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPageProps) {
-  // 0. Modo de Vista: Listado de Órdenes Guardadas vs Matriz de Cálculo de la Orden
-  const [viewMode, setViewMode] = useState<'list' | 'matrix'>('list')
+  // 0. Modo de Vista: Listado vs Matriz vs Resumen de Aprobación vs Packing List
+  const [viewMode, setViewMode] = useState<'list' | 'matrix' | 'approval_summary' | 'packing_list'>('list')
   const [orders, setOrders] = useState<ProjectionOrder[]>([])
   const [selectedOrder, setSelectedOrder] = useState<ProjectionOrder | null>(null)
+  const isOrderLocked = Boolean(
+    selectedOrder && (selectedOrder.estado === 'TRANSITO' || selectedOrder.estado === 'RECIBIDA')
+  )
   const [newOrderModalOpen, setNewOrderModalOpen] = useState(false)
   const [excelModalOpen, setExcelModalOpen] = useState(false)
   const [suppliers, setSuppliers] = useState<Array<{ id_proveedor: number; razon_social: string }>>([])
@@ -65,9 +75,13 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
   // 2. Selección grupal para órdenes de importación
   const [selectedItemIds, setSelectedItemIds] = useState<Set<number>>(new Set())
 
-  // 3. Búsqueda y filtros
+  // 3. Búsqueda y catálogo interactivo
   const [searchTerm, setSearchTerm] = useState('')
-  const [statusFilter, setStatusFilter] = useState<'TODOS' | 'CRITICO' | 'REORDEN' | 'OPTIMO'>('TODOS')
+  const [catalogProducts, setCatalogProducts] = useState<
+    Array<{ id_producto?: number | null; sku?: string; nombre: string }>
+  >([])
+  const [isSearchDropdownOpen, setIsSearchDropdownOpen] = useState(false)
+  const searchWrapperRef = useRef<HTMLDivElement>(null)
 
   // 4. Configuración de Rango de Meses para Promedio
   const [startMonth, setStartMonth] = useState<string>('SEP')
@@ -123,68 +137,13 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
   // Modal de Agregar Producto
   const [addProductModalOpen, setAddProductModalOpen] = useState(false)
   const [newProductName, setNewProductName] = useState('')
-
-  // Modal y plan de paletizado / packing list
-  const [packingPlanModal, setPackingPlanModal] = useState<OrderPackingPlan | null>(null)
-  const [packingModalTab, setPackingModalTab] = useState<'summary' | 'tags'>('summary')
-  const [copiedTag, setCopiedTag] = useState<string | null>(null)
-  const [isGeneratingPackingPlan, setIsGeneratingPackingPlan] = useState(false)
   const [newProductStock, setNewProductStock] = useState<number>(0)
   const [isAddingProduct, setIsAddingProduct] = useState(false)
 
-  const handleCopyTag = (tag: string) => {
-    navigator.clipboard.writeText(tag)
-    setCopiedTag(tag)
-    setTimeout(() => setCopiedTag(null), 2000)
-  }
-
-  const allIndividualPallets = useMemo(() => {
-    if (!packingPlanModal) return []
-    const list: Array<{
-      correlativo: number
-      uid_tag: string
-      sku: string
-      nombre: string
-      tipo: 'COMPLETO' | 'PUCHO' | 'RESERVA_EXCEDENTE'
-      cajas: number
-      unidades: number
-    }> = []
-
-    let idx = 1
-    for (const prod of packingPlanModal.productos) {
-      for (const pal of prod.paletas) {
-        list.push({
-          correlativo: idx++,
-          uid_tag: pal.uid_tag,
-          sku: prod.sku,
-          nombre: prod.nombre,
-          tipo: pal.tipo,
-          cajas: pal.cajas,
-          unidades: pal.unidades
-        })
-      }
-    }
-
-    for (const res of packingPlanModal.etiquetas_reserva) {
-      list.push({
-        correlativo: idx++,
-        uid_tag: res.uid_tag,
-        sku: 'RESERVA',
-        nombre: 'Tag de contingencia para excedentes en muelle',
-        tipo: 'RESERVA_EXCEDENTE',
-        cajas: 0,
-        unidades: 0
-      })
-    }
-
-    return list
-  }, [packingPlanModal])
-
-  // Modal de Generar Orden de Importación
-  const [orderModalOpen, setOrderModalOpen] = useState(false)
-  const [orderNumber, setOrderNumber] = useState('')
-  const [orderContainerType, setOrderContainerType] = useState<'40FT' | '20FT' | 'LCL'>('40FT')
-  const [isCreatingOrder, setIsCreatingOrder] = useState(false)
+  // Vista y plan de paletizado / packing list completo
+  const [packingPlan, setPackingPlan] = useState<OrderPackingPlan | null>(null)
+  const [packingPreviousView, setPackingPreviousView] = useState<'list' | 'matrix' | 'approval_summary'>('matrix')
+  const [isGeneratingPackingPlan, setIsGeneratingPackingPlan] = useState(false)
 
   // Plantilla activa
   const activeTemplate = useMemo(() => {
@@ -218,6 +177,33 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
         }))
       )
 
+      // Cargar única y exclusivamente los productos registrados en la base de datos (public.producto)
+      try {
+        const { data: prods, error: prodsErr } = await supabase
+          .from('producto')
+          .select('id_producto, sku, nombre')
+          .eq('activo', true)
+          .order('nombre', { ascending: true })
+
+        if (prodsErr) {
+          console.warn('Error al consultar productos de base de datos:', prodsErr.message)
+          setCatalogProducts([])
+        } else if (prods && Array.isArray(prods)) {
+          setCatalogProducts(
+            prods.map((p: any) => ({
+              id_producto: p.id_producto,
+              sku: p.sku || '',
+              nombre: p.nombre
+            }))
+          )
+        } else {
+          setCatalogProducts([])
+        }
+      } catch (err: any) {
+        console.warn('Excepción al cargar productos de base de datos:', err?.message)
+        setCatalogProducts([])
+      }
+
       const activeTpl = tplList.find((t) => t.id_plantilla === selectedTemplateId) || tplList[0]
       if (activeTpl) {
         setSelectedTemplateId(activeTpl.id_plantilla)
@@ -250,7 +236,18 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
 
   // 1b. GESTIÓN Y SELECCIÓN DE ÓRDENES GUARDADAS
   const handleSelectOrder = async (order: ProjectionOrder) => {
-    setSelectedOrder(order)
+    // Restaurar el snapshot persistente desde el objeto o desde almacenamiento dedicado
+    const snapshot =
+      order.snapshot_proyeccion ||
+      projectionService.getSnapshotFromStorage(order.id_orden, order.numero_orden)
+
+    const resolvedOrder: ProjectionOrder = {
+      ...order,
+      snapshot_proyeccion: snapshot,
+      estado: snapshot?.estado_operativo || order.estado
+    }
+
+    setSelectedOrder(resolvedOrder)
     const tplId = order.id_plantilla || 1
     setSelectedTemplateId(tplId)
     setSelectedItemIds(new Set())
@@ -265,20 +262,20 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
       setFormDiasMes(Number(activeTpl.dias_por_mes) || 30)
 
       // Si la orden tiene un snapshot guardado de meses/ítems, restaurarlo
-      if (order.snapshot_proyeccion?.columnas_meses !== undefined) {
-        const orderMonths = order.snapshot_proyeccion.columnas_meses || []
+      if (snapshot?.columnas_meses !== undefined && Array.isArray(snapshot.columnas_meses)) {
+        const orderMonths = snapshot.columnas_meses || []
         setTemplates((prev) =>
           prev.map((t) =>
             t.id_plantilla === tplId ? { ...t, columnas_meses: orderMonths } : t
           )
         )
-        setStartMonth(order.snapshot_proyeccion.startMonth || (orderMonths.length > 0 ? orderMonths[0] : ''))
-        setEndMonth(order.snapshot_proyeccion.endMonth || (orderMonths.length > 0 ? orderMonths[orderMonths.length - 1] : ''))
-        setIgnoreZeroMonths(order.snapshot_proyeccion.ignoreZeroMonths !== false)
-      } else if (order.snapshot_proyeccion?.startMonth && order.snapshot_proyeccion?.endMonth) {
-        setStartMonth(order.snapshot_proyeccion.startMonth)
-        setEndMonth(order.snapshot_proyeccion.endMonth)
-        setIgnoreZeroMonths(order.snapshot_proyeccion.ignoreZeroMonths !== false)
+        setStartMonth(snapshot.startMonth || (orderMonths.length > 0 ? orderMonths[0] : ''))
+        setEndMonth(snapshot.endMonth || (orderMonths.length > 0 ? orderMonths[orderMonths.length - 1] : ''))
+        setIgnoreZeroMonths(snapshot.ignoreZeroMonths !== false)
+      } else if (snapshot?.startMonth && snapshot?.endMonth) {
+        setStartMonth(snapshot.startMonth)
+        setEndMonth(snapshot.endMonth)
+        setIgnoreZeroMonths(snapshot.ignoreZeroMonths !== false)
       } else {
         const months = activeTpl.columnas_meses || []
         const initStart = activeTpl.mes_inicio_promedio || (months.length > 0 ? months[0] : '')
@@ -288,8 +285,8 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
         setIgnoreZeroMonths(activeTpl.ignorar_meses_cero !== false)
       }
 
-      if (order.snapshot_proyeccion?.items && order.snapshot_proyeccion.items.length > 0) {
-        setItems(order.snapshot_proyeccion.items)
+      if (snapshot?.items !== undefined && Array.isArray(snapshot.items)) {
+        setItems(snapshot.items)
       } else {
         const rawItems = await projectionService.getItems(activeTpl.id_plantilla, activeTpl.codigo)
         setItems(rawItems)
@@ -306,16 +303,9 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
     id_proveedor: number | null
     tipo_contenedor: '20FT' | '40FT' | 'LCL'
   }) => {
-    // Al crear una orden nueva, no debe traer meses viejos ni inventados
+    // Al crear una orden nueva, inicia limpia y sin productos pre-cargados
     const activeTpl = templates.find((t) => t.id_plantilla === data.id_plantilla) || templates[0]
-    const templateItems = await projectionService.getItems(activeTpl.id_plantilla, activeTpl.codigo)
-    const cleanItems = templateItems.map((it) => ({
-      ...it,
-      datos_meses: {} as Record<string, number>,
-      promedio_manual: null,
-      stock_manual: liveStockMap.get(it.nombre_producto) || 0,
-      stock_redondeado_manual: null
-    }))
+    const cleanItems: ProjectionItem[] = []
 
     const res = await projectionService.createOrder({
       numero_orden: data.numero_orden,
@@ -358,6 +348,49 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
     setSuccessMsg('Orden eliminada correctamente del historial.')
   }
 
+  // Volver a la lista de órdenes persistiendo el avance actual
+  const handleBackToList = () => {
+    if (selectedOrder) {
+      const currentMonths = activeTemplate?.columnas_meses || []
+      const sumUnits = calculatedRows.reduce((acc, r) => acc + (r.compra_sugerida || 0), 0)
+      const snapshot: any = {
+        templateId: activeTemplate?.id_plantilla,
+        templateCodigo: activeTemplate?.codigo,
+        startMonth,
+        endMonth,
+        columnas_meses: currentMonths,
+        ignoreZeroMonths,
+        items,
+        customColumns: activeTemplate?.columnas_personalizadas,
+        estado_operativo: selectedOrder.estado
+      }
+      projectionService.saveSnapshotToStorage(
+        selectedOrder.id_orden,
+        selectedOrder.numero_orden,
+        snapshot
+      )
+      void projectionService.updateOrder(selectedOrder.id_orden, {
+        numero_orden: selectedOrder.numero_orden,
+        total_items: items.length,
+        total_unidades: sumUnits,
+        snapshot_proyeccion: snapshot
+      })
+      setOrders((prev) =>
+        prev.map((ord) =>
+          ord.id_orden === selectedOrder.id_orden
+            ? {
+                ...ord,
+                total_items: items.length,
+                total_unidades: sumUnits,
+                snapshot_proyeccion: snapshot
+              }
+            : ord
+        )
+      )
+    }
+    setViewMode('list')
+  }
+
   const handleOpenPackingPlan = async (targetOrder?: ProjectionOrder) => {
     const ord = targetOrder || selectedOrder
     if (!ord) return
@@ -381,8 +414,11 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
         }
       }
 
-      const plan = await packingListService.generateOrderPackingPlan(orderToPlan, 'IMP')
-      setPackingPlanModal(plan)
+      const warehousePrefix = ord.snapshot_proyeccion?.warehousePrefix || 'IMP'
+      const plan = await packingListService.generateOrderPackingPlan(orderToPlan, warehousePrefix)
+      setPackingPreviousView(viewMode === 'packing_list' ? 'matrix' : viewMode)
+      setPackingPlan(plan)
+      setViewMode('packing_list')
     } catch (err: any) {
       setErrorMsg(err.message || 'Error al generar el plan de paletizado y packing list.')
     } finally {
@@ -390,62 +426,221 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
     }
   }
 
-  const handleEmitActiveOrder = async () => {
+  // Culminar la proyección y pasar al resumen de aprobación
+  const handleTerminarProyeccion = async () => {
     if (!selectedOrder) return
+    if (calculatedRows.length === 0) {
+      setErrorMsg('No hay productos en la matriz para terminar la proyección.')
+      return
+    }
 
+    try {
+      setIsEmittingOrder(true)
+      const sumUnits = calculatedRows.reduce((acc, r) => acc + (r.compra_sugerida || 0), 0)
+      const updatedSnapshot = {
+        ...(selectedOrder.snapshot_proyeccion || {}),
+        templateId: activeTemplate?.id_plantilla,
+        templateCodigo: activeTemplate?.codigo,
+        startMonth,
+        endMonth,
+        ignoreZeroMonths,
+        columnas_meses: activeTemplate?.columnas_meses || [],
+        items,
+        customColumns: activeTemplate?.columnas_personalizadas,
+        estado_operativo: 'FALTA_APROBACION'
+      }
+
+      await projectionService.updateOrder(selectedOrder.id_orden, {
+        estado: 'FALTA_APROBACION',
+        total_items: items.length,
+        total_unidades: sumUnits,
+        snapshot_proyeccion: updatedSnapshot
+      })
+
+      const updatedOrders = await projectionService.getOrders()
+      setOrders(updatedOrders)
+      setSelectedOrder((prev) =>
+        prev
+          ? {
+              ...prev,
+              estado: 'FALTA_APROBACION',
+              total_items: items.length,
+              total_unidades: sumUnits,
+              snapshot_proyeccion: updatedSnapshot
+            }
+          : prev
+      )
+
+      setSuccessMsg('Proyección terminada. A continuación se abre el resumen de aprobación.')
+      setViewMode('approval_summary')
+    } catch (err: any) {
+      setErrorMsg(`Error al terminar la proyección: ${err.message}`)
+    } finally {
+      setIsEmittingOrder(false)
+    }
+  }
+
+  // Eliminar columna de mes de la matriz
+  const handleDeleteMonth = (monthToDelete: string) => {
+    if (isOrderLocked || !activeTemplate || !activeTemplate.columnas_meses) return
+    if (!window.confirm(`¿Deseas eliminar la columna de mes "${monthToDelete}" de la matriz?`)) return
+
+    const updatedMonths = activeTemplate.columnas_meses.filter((m) => m !== monthToDelete)
+    setTemplates((prev) =>
+      prev.map((t) =>
+        t.id_plantilla === activeTemplate.id_plantilla
+          ? { ...t, columnas_meses: updatedMonths }
+          : t
+      )
+    )
+
+    let newStart = startMonth
+    let newEnd = endMonth
+    if (startMonth === monthToDelete) {
+      newStart = updatedMonths.length > 0 ? updatedMonths[0] : ''
+      setStartMonth(newStart)
+    }
+    if (endMonth === monthToDelete) {
+      newEnd = updatedMonths.length > 0 ? updatedMonths[updatedMonths.length - 1] : ''
+      setEndMonth(newEnd)
+    }
+
+    if (selectedOrder) {
+      const updatedSnapshot = {
+        ...(selectedOrder.snapshot_proyeccion || {}),
+        columnas_meses: updatedMonths,
+        startMonth: newStart,
+        endMonth: newEnd,
+        items,
+        estado_operativo: selectedOrder.estado
+      }
+      projectionService.saveSnapshotToStorage(
+        selectedOrder.id_orden,
+        selectedOrder.numero_orden,
+        updatedSnapshot
+      )
+      void projectionService.updateOrder(selectedOrder.id_orden, {
+        numero_orden: selectedOrder.numero_orden,
+        snapshot_proyeccion: updatedSnapshot
+      })
+      setSelectedOrder((prev) => (prev ? { ...prev, snapshot_proyeccion: updatedSnapshot } : prev))
+    }
+    setSuccessMsg(`Columna del mes ${monthToDelete} eliminada de la matriz.`)
+  }
+
+  const handleGoToApprovalSummary = () => {
+    if (!selectedOrder) return
     const rowsWithPurchase = calculatedRows.filter((r) => r.compra_sugerida > 0)
     if (rowsWithPurchase.length === 0) {
-      setErrorMsg('No hay productos con compra sugerida mayor a cero para emitir en esta orden.')
+      setErrorMsg('No hay productos con compra sugerida mayor a cero para revisar en el resumen de aprobación.')
+      return
+    }
+    setErrorMsg(null)
+    setViewMode('approval_summary')
+  }
+
+  const handleConfirmApprovalAndEmit = async (approvedRows: ApprovedItemRow[]) => {
+    if (!selectedOrder) return
+
+    const approvedRowsWithPurchase = approvedRows.filter((r) => r.cantidad_aprobada > 0)
+    if (approvedRowsWithPurchase.length === 0) {
+      setErrorMsg('Debe autorizar al menos un producto con cantidad mayor a cero para emitir la orden.')
       return
     }
 
     setIsEmittingOrder(true)
     setErrorMsg(null)
     try {
+      const sumApprovedUnits = approvedRowsWithPurchase.reduce((acc, r) => acc + r.cantidad_aprobada, 0)
+
+      const rowsForOrder: CalculatedProjectionRow[] = approvedRowsWithPurchase.map((r) => ({
+        id_item: r.id_item,
+        id_plantilla: activeTemplate?.id_plantilla || 0,
+        id_producto: r.id_producto,
+        nombre_producto: r.nombre_producto,
+        datos_meses: {},
+        meses_incluidos_promedio: [],
+        promedio_calculado: r.promedio_consumo,
+        promedio_final: r.promedio_consumo,
+        stock_real: r.stock_real,
+        stock_min: 0,
+        seguridad: 0,
+        stock_min_f: 0,
+        stock_min_redondeado: 0,
+        compra_sugerida: r.cantidad_aprobada,
+        meses_duracion: 0,
+        texto_duracion: '',
+        fecha_quiebre: '',
+        estado_critico: 'OPTIMO' as const
+      }))
+
       const res = await projectionService.createImportOrderFromProjection(
         selectedOrder.numero_orden,
         selectedOrder.tipo_contenedor || '40FT',
-        rowsWithPurchase
+        rowsForOrder
       )
 
       if (!res.success) {
         throw new Error(res.error || 'Error al emitir la orden.')
       }
 
-      const sumUnits = rowsWithPurchase.reduce((acc, r) => acc + r.compra_sugerida, 0)
+      const updatedSnapshot = {
+        templateId: activeTemplate?.id_plantilla,
+        templateCodigo: activeTemplate?.codigo,
+        startMonth,
+        endMonth,
+        ignoreZeroMonths,
+        columnas_meses: activeTemplate?.columnas_meses || [],
+        items,
+        customColumns: activeTemplate?.columnas_personalizadas,
+        approval_summary: approvedRows,
+        isLocked: true,
+        fecha_aprobacion: new Date().toISOString()
+      }
+
       await projectionService.updateOrder(selectedOrder.id_orden, {
         estado: 'TRANSITO',
-        total_items: rowsWithPurchase.length,
-        total_unidades: sumUnits,
-        snapshot_proyeccion: {
-          templateId: activeTemplate?.id_plantilla,
-          templateCodigo: activeTemplate?.codigo,
-          startMonth,
-          endMonth,
-          ignoreZeroMonths,
-          items,
-          customColumns: activeTemplate?.columnas_personalizadas
-        }
+        total_items: approvedRowsWithPurchase.length,
+        total_unidades: sumApprovedUnits,
+        snapshot_proyeccion: updatedSnapshot
       })
 
       const updatedOrders = await projectionService.getOrders()
       setOrders(updatedOrders)
       const freshOrder = updatedOrders.find((o) => o.id_orden === selectedOrder.id_orden) || {
         ...selectedOrder,
-        estado: 'TRANSITO',
-        total_items: rowsWithPurchase.length,
-        total_unidades: sumUnits
+        estado: 'TRANSITO' as const,
+        total_items: approvedRowsWithPurchase.length,
+        total_unidades: sumApprovedUnits,
+        snapshot_proyeccion: updatedSnapshot
       }
       setSelectedOrder(freshOrder)
       setSuccessMsg(
-        `¡Orden ${selectedOrder.numero_orden} emitida con éxito a Tránsito Marítimo con ${rowsWithPurchase.length} productos (${sumUnits.toLocaleString('es-PE')} unid)! Ya está disponible en el Módulo 04 (Recepciones) para su control en muelle.`
+        `¡Cantidades aprobadas con éxito! La orden ${selectedOrder.numero_orden} ha sido emitida a Tránsito Marítimo con ${approvedRowsWithPurchase.length} productos autorizados (${sumApprovedUnits.toLocaleString('es-PE')} unid). A continuación se muestra el Packing List y plan de paletizado oficial.`
       )
 
-      // Abrir de inmediato el plan de paletizado y descarga de etiquetas para el usuario
+      // Abrir de inmediato la vista del Packing List con las cantidades aprobadas
       try {
-        const plan = await packingListService.generateOrderPackingPlan(freshOrder, 'IMP')
-        setPackingPlanModal(plan)
-      } catch {}
+        const orderToPlan = {
+          ...freshOrder,
+          detalles: approvedRowsWithPurchase.map((r) => ({
+            id_producto: r.id_producto || 0,
+            cantidad_pedida: r.cantidad_aprobada,
+            producto: {
+              sku: r.sku,
+              nombre: r.nombre_producto
+            }
+          }))
+        }
+        const warehousePrefix = (freshOrder.snapshot_proyeccion as any)?.warehousePrefix || 'IMP'
+        const plan = await packingListService.generateOrderPackingPlan(orderToPlan, warehousePrefix)
+        setPackingPlan(plan)
+        setPackingPreviousView('matrix')
+        setViewMode('packing_list')
+      } catch (packErr: any) {
+        console.error('Error al generar packing list post-emisión:', packErr)
+        setViewMode('matrix')
+      }
     } catch (err: any) {
       setErrorMsg(err.message || 'Error al emitir la orden a tránsito.')
     } finally {
@@ -456,20 +651,44 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
   const handleSaveOrderSnapshot = async () => {
     if (!selectedOrder) return
     try {
-      const sumUnits = calculatedRows.reduce((acc, r) => acc + r.compra_sugerida, 0)
+      const sumUnits = calculatedRows.reduce((acc, r) => acc + (r.compra_sugerida || 0), 0)
+      const currentMonths = activeTemplate?.columnas_meses || []
+      const snapshot: any = {
+        templateId: activeTemplate?.id_plantilla,
+        templateCodigo: activeTemplate?.codigo,
+        startMonth,
+        endMonth,
+        columnas_meses: currentMonths,
+        ignoreZeroMonths,
+        items,
+        customColumns: activeTemplate?.columnas_personalizadas,
+        estado_operativo: selectedOrder.estado
+      }
+
+      projectionService.saveSnapshotToStorage(
+        selectedOrder.id_orden,
+        selectedOrder.numero_orden,
+        snapshot
+      )
+
       await projectionService.updateOrder(selectedOrder.id_orden, {
+        numero_orden: selectedOrder.numero_orden,
         total_items: items.length,
         total_unidades: sumUnits,
-        snapshot_proyeccion: {
-          templateId: activeTemplate?.id_plantilla,
-          templateCodigo: activeTemplate?.codigo,
-          startMonth,
-          endMonth,
-          ignoreZeroMonths,
-          items,
-          customColumns: activeTemplate?.columnas_personalizadas
-        }
+        snapshot_proyeccion: snapshot
       })
+
+      setSelectedOrder((prev) =>
+        prev
+          ? {
+              ...prev,
+              total_items: items.length,
+              total_unidades: sumUnits,
+              snapshot_proyeccion: snapshot
+            }
+          : prev
+      )
+
       const updatedOrders = await projectionService.getOrders()
       setOrders(updatedOrders)
       setSuccessMsg(`Cálculos y proyecciones guardados para la orden ${selectedOrder.numero_orden}.`)
@@ -479,6 +698,7 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
   }
 
   const handleApplyExcelOutputs = async (updatedItems: ProjectionItem[], detectedMonths: string[]) => {
+    if (isOrderLocked) return
     setItems(updatedItems)
 
     if (activeTemplate && detectedMonths.length > 0) {
@@ -498,55 +718,44 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
     }
 
     if (selectedOrder) {
-      const sumUnits = calculatedRows.reduce((acc, r) => acc + r.compra_sugerida, 0)
+      const sumUnits = calculatedRows.reduce((acc, r) => acc + (r.compra_sugerida || 0), 0)
+      const snap = {
+        templateId: activeTemplate?.id_plantilla,
+        templateCodigo: activeTemplate?.codigo,
+        startMonth: detectedMonths[0],
+        endMonth: detectedMonths[detectedMonths.length - 1],
+        columnas_meses: detectedMonths,
+        ignoreZeroMonths,
+        items: updatedItems,
+        customColumns: activeTemplate?.columnas_personalizadas,
+        estado_operativo: selectedOrder.estado
+      }
+      projectionService.saveSnapshotToStorage(
+        selectedOrder.id_orden,
+        selectedOrder.numero_orden,
+        snap
+      )
       void projectionService.updateOrder(selectedOrder.id_orden, {
+        numero_orden: selectedOrder.numero_orden,
         total_items: updatedItems.length,
         total_unidades: sumUnits,
-        snapshot_proyeccion: {
-          templateId: activeTemplate?.id_plantilla,
-          templateCodigo: activeTemplate?.codigo,
-          startMonth: detectedMonths[0],
-          endMonth: detectedMonths[detectedMonths.length - 1],
-          columnas_meses: detectedMonths,
-          ignoreZeroMonths,
-          items: updatedItems,
-          customColumns: activeTemplate?.columnas_personalizadas
-        }
+        snapshot_proyeccion: snap
       })
+      setSelectedOrder((prev) =>
+        prev
+          ? {
+              ...prev,
+              total_items: updatedItems.length,
+              total_unidades: sumUnits,
+              snapshot_proyeccion: snap
+            }
+          : prev
+      )
     }
 
     setSuccessMsg(
       `Consumos y salidas hacia agencias importados con éxito desde Excel. Se configuraron los meses ${detectedMonths.join(', ')} y el promedio se recalculó reactivamente.`
     )
-  }
-
-  // Cambiar de plantilla (pestaña)
-  const handleSelectTemplate = async (templateId: number) => {
-    setSelectedTemplateId(templateId)
-    setSelectedItemIds(new Set())
-    setErrorMsg(null)
-    const tpl = templates.find((t) => t.id_plantilla === templateId)
-    if (!tpl) return
-
-    setFormLeadTime(Number(tpl.lead_time_meses))
-    setFormSeguridadPct(Number(tpl.seguridad_pct) * 100)
-    setFormFactorCompra(Number(tpl.factor_compra))
-    setFormDiasMes(Number(tpl.dias_por_mes) || 30)
-
-    const months = tpl.columnas_meses || []
-    setStartMonth(tpl.mes_inicio_promedio || (months.length > 0 ? months[0] : ''))
-    setEndMonth(tpl.mes_fin_promedio || (months.length > 0 ? months[months.length - 1] : ''))
-    setIgnoreZeroMonths(tpl.ignorar_meses_cero !== false)
-
-    setLoading(true)
-    try {
-      const rawItems = await projectionService.getItems(tpl.id_plantilla, tpl.codigo)
-      setItems(rawItems)
-    } catch (err: any) {
-      setErrorMsg(`Error al cambiar de plantilla: ${err.message}`)
-    } finally {
-      setLoading(false)
-    }
   }
 
   // Sincronizar existencias físicas en tiempo real
@@ -573,10 +782,146 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
   const filteredRows = useMemo(() => {
     return calculatedRows.filter((r) => {
       const matchSearch = r.nombre_producto.toLowerCase().includes(searchTerm.toLowerCase().trim())
-      const matchStatus = statusFilter === 'TODOS' || r.estado_critico === statusFilter
-      return matchSearch && matchStatus
+      return matchSearch
     })
-  }, [calculatedRows, searchTerm, statusFilter])
+  }, [calculatedRows, searchTerm])
+
+  // Recargar catálogo fresco exclusivamente desde la base de datos (public.producto)
+  const loadCatalogProductsFromDB = async () => {
+    try {
+      const { data: prods, error: prodsErr } = await supabase
+        .from('producto')
+        .select('id_producto, sku, nombre')
+        .eq('activo', true)
+        .order('nombre', { ascending: true })
+
+      if (!prodsErr && prods && Array.isArray(prods)) {
+        setCatalogProducts(
+          prods.map((p: any) => ({
+            id_producto: p.id_producto,
+            sku: p.sku || '',
+            nombre: p.nombre
+          }))
+        )
+      }
+    } catch {
+      // Ignorar silenciosamente
+    }
+  }
+
+  // Coincidencias en catálogo de base de datos para búsqueda y botón Añadir
+  const matchingCatalogProducts = useMemo(() => {
+    const q = searchTerm.trim().toLowerCase()
+    if (!q) return []
+    return catalogProducts
+      .filter(
+        (p) =>
+          p.nombre.toLowerCase().includes(q) ||
+          (p.sku && p.sku.toLowerCase().includes(q))
+      )
+      .slice(0, 20)
+  }, [catalogProducts, searchTerm])
+
+  // Cerrar menú flotante de búsqueda al hacer clic fuera
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (
+        searchWrapperRef.current &&
+        !searchWrapperRef.current.contains(event.target as Node)
+      ) {
+        setIsSearchDropdownOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside)
+    }
+  }, [])
+
+  // Añadir producto desde el buscador
+  const handleQuickAddProduct = async (product: {
+    id_producto?: number | null
+    sku?: string
+    nombre: string
+  }) => {
+    if (isOrderLocked) return
+    const cleanName = product.nombre.trim().toUpperCase()
+    if (!cleanName) return
+
+    if (items.some((it) => it.nombre_producto.toUpperCase() === cleanName)) {
+      setErrorMsg(`El producto "${cleanName}" ya está añadido a la proyección.`)
+      return
+    }
+
+    const initialStock = liveStockMap.get(cleanName) || 0
+    const newItem: ProjectionItem = {
+      id_item: Date.now() + Math.floor(Math.random() * 1000),
+      id_plantilla: activeTemplate?.id_plantilla || 1,
+      id_producto: product.id_producto || null,
+      nombre_producto: cleanName,
+      datos_meses: {},
+      promedio_manual: null,
+      stock_manual: initialStock,
+      stock_redondeado_manual: null,
+      orden_fila: items.length + 1,
+      activo: true
+    }
+
+    if (activeTemplate?.columnas_meses) {
+      activeTemplate.columnas_meses.forEach((m) => {
+        newItem.datos_meses[m] = 0
+      })
+    }
+
+    // Persistir sin bloquear
+    void projectionService.addItem(activeTemplate?.id_plantilla || 1, cleanName, initialStock)
+
+    const updatedItems = [...items, newItem]
+    setItems(updatedItems)
+
+    if (selectedOrder) {
+      const updatedSnapshot = {
+        templateId: activeTemplate?.id_plantilla,
+        templateCodigo: activeTemplate?.codigo,
+        startMonth,
+        endMonth,
+        columnas_meses: activeTemplate?.columnas_meses || [],
+        ignoreZeroMonths,
+        items: updatedItems,
+        customColumns: activeTemplate?.columnas_personalizadas,
+        estado_operativo: selectedOrder.estado
+      }
+      projectionService.saveSnapshotToStorage(
+        selectedOrder.id_orden,
+        selectedOrder.numero_orden,
+        updatedSnapshot
+      )
+      void projectionService.updateOrder(selectedOrder.id_orden, {
+        numero_orden: selectedOrder.numero_orden,
+        total_items: updatedItems.length,
+        snapshot_proyeccion: updatedSnapshot
+      })
+      setSelectedOrder((prev) =>
+        prev
+          ? {
+              ...prev,
+              total_items: updatedItems.length,
+              snapshot_proyeccion: updatedSnapshot
+            }
+          : prev
+      )
+      setOrders((prev) =>
+        prev.map((ord) =>
+          ord.id_orden === selectedOrder.id_orden
+            ? { ...ord, total_items: updatedItems.length, snapshot_proyeccion: updatedSnapshot }
+            : ord
+        )
+      )
+    }
+
+    setErrorMsg(null)
+    setSuccessMsg(`Producto "${cleanName}" añadido a la proyección con éxito.`)
+  }
 
   // Métricas de resumen para la tira horizontal de indicadores
   const metrics = useMemo(() => {
@@ -652,7 +997,7 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
   // CONSTRUCTOR VISUAL DE ECUACIONES POR COLUMNA
   // =========================================================================
   const openEquationModal = (colKey: CalculableColumnKey) => {
-    if (!activeTemplate) return
+    if (isOrderLocked || !activeTemplate) return
     setSelectedColumnForEquation(colKey)
     setFormulaBarColumn(colKey)
     const config = projectionFormulaEngine.getColumnEquationConfig(colKey, activeTemplate)
@@ -901,10 +1246,11 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
   // EDICIÓN INTERACTIVA DE CELDAS INLINE Y RESET
   // =========================================================================
   const handleCellChange = (id_item: number, field: string, rawValue: string) => {
+    if (isOrderLocked) return
     const numValue = rawValue === '' ? null : Number(rawValue)
 
     setItems((prevItems) => {
-      return prevItems.map((item) => {
+      const updated = prevItems.map((item) => {
         if (item.id_item !== id_item) return item
 
         if (field.startsWith('month_')) {
@@ -934,11 +1280,33 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
 
         return item
       })
+
+      if (selectedOrder) {
+        const snap = {
+          templateId: activeTemplate?.id_plantilla,
+          templateCodigo: activeTemplate?.codigo,
+          startMonth,
+          endMonth,
+          columnas_meses: activeTemplate?.columnas_meses || [],
+          ignoreZeroMonths,
+          items: updated,
+          customColumns: activeTemplate?.columnas_personalizadas,
+          estado_operativo: selectedOrder.estado
+        }
+        projectionService.saveSnapshotToStorage(
+          selectedOrder.id_orden,
+          selectedOrder.numero_orden,
+          snap
+        )
+      }
+
+      return updated
     })
   }
 
   // Revertir sobreescritura manual al promedio calculado por la fórmula
   const handleResetManualAverage = (id_item: number) => {
+    if (isOrderLocked) return
     setItems((prev) =>
       prev.map((i) => (i.id_item === id_item ? { ...i, promedio_manual: null } : i))
     )
@@ -947,6 +1315,7 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
 
   // Revertir sobreescritura manual al stock redondeado comercial
   const handleResetManualRound = (id_item: number) => {
+    if (isOrderLocked) return
     setItems((prev) =>
       prev.map((i) => (i.id_item === id_item ? { ...i, stock_redondeado_manual: null } : i))
     )
@@ -1028,31 +1397,75 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
   const handleAddMonth = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!activeTemplate || !newMonthName.trim()) return
+    const upperMonth = newMonthName.trim().toUpperCase()
+
+    const existingMonths = activeTemplate.columnas_meses || []
+    if (existingMonths.includes(upperMonth)) {
+      setErrorMsg(`El mes "${upperMonth}" ya está incluido en la matriz.`)
+      return
+    }
+
     setIsAddingMonth(true)
     setErrorMsg(null)
 
     try {
-      const res = await projectionService.addMonthColumn(
+      await projectionService.addMonthColumn(
         activeTemplate.id_plantilla,
-        activeTemplate.columnas_meses,
-        newMonthName
+        existingMonths,
+        upperMonth
       )
 
-      if (!res.success) {
-        setErrorMsg(res.error || 'No se pudo agregar la columna de mes.')
-        return
-      }
-
-      const upperMonth = newMonthName.trim().toUpperCase()
+      const updatedMonths = [...existingMonths, upperMonth]
       setTemplates((prev) =>
         prev.map((t) =>
           t.id_plantilla === activeTemplate.id_plantilla
-            ? { ...t, columnas_meses: [...t.columnas_meses, upperMonth] }
+            ? { ...t, columnas_meses: updatedMonths }
             : t
         )
       )
 
-      setSuccessMsg(`Columna ${upperMonth} incorporada a la matriz.`)
+      // Ajustar rangos de promedio
+      if (!startMonth) {
+        setStartMonth(upperMonth)
+      }
+      setEndMonth(upperMonth)
+
+      // Inicializar el mes en todos los ítems actuales
+      const updatedItems = items.map((it) => ({
+        ...it,
+        datos_meses: {
+          ...it.datos_meses,
+          [upperMonth]: it.datos_meses[upperMonth] ?? 0
+        }
+      }))
+      setItems(updatedItems)
+
+      // Sincronizar snapshot si hay orden activa
+      if (selectedOrder) {
+        const updatedSnapshot = {
+          ...(selectedOrder.snapshot_proyeccion || {}),
+          templateId: activeTemplate.id_plantilla,
+          templateCodigo: activeTemplate.codigo,
+          columnas_meses: updatedMonths,
+          startMonth: selectedOrder.snapshot_proyeccion?.startMonth || startMonth || upperMonth,
+          endMonth: upperMonth,
+          items: updatedItems,
+          customColumns: activeTemplate.columnas_personalizadas,
+          estado_operativo: selectedOrder.estado
+        }
+        projectionService.saveSnapshotToStorage(
+          selectedOrder.id_orden,
+          selectedOrder.numero_orden,
+          updatedSnapshot
+        )
+        void projectionService.updateOrder(selectedOrder.id_orden, {
+          numero_orden: selectedOrder.numero_orden,
+          snapshot_proyeccion: updatedSnapshot
+        })
+        setSelectedOrder((prev) => (prev ? { ...prev, snapshot_proyeccion: updatedSnapshot } : prev))
+      }
+
+      setSuccessMsg(`Columna ${upperMonth} incorporada a la matriz exitosamente.`)
       setNewMonthName('')
       setAddMonthModalOpen(false)
     } catch (err: any) {
@@ -1093,67 +1506,66 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
     }
   }
 
-  // Eliminar fila
+  // Eliminar fila de la proyección
   const handleDeleteItem = async (id_item: number, name: string) => {
+    if (isOrderLocked) return
     if (!window.confirm(`¿Confirmas eliminar "${name}" de esta proyección?`)) return
     try {
-      const res = await projectionService.deleteItem(id_item)
-      if (!res.success) {
-        setErrorMsg(res.error || 'No se pudo eliminar el producto.')
-        return
+      // Eliminar sin bloquear por errores de tabla en Supabase
+      await projectionService.deleteItem(id_item)
+      const remainingItems = items.filter((i) => i.id_item !== id_item)
+      setItems(remainingItems)
+
+      setSelectedItemIds((prev) => {
+        const next = new Set(prev)
+        next.delete(id_item)
+        return next
+      })
+
+      if (selectedOrder) {
+        const updatedSnapshot = {
+          templateId: activeTemplate?.id_plantilla,
+          templateCodigo: activeTemplate?.codigo,
+          startMonth,
+          endMonth,
+          columnas_meses: activeTemplate?.columnas_meses || [],
+          ignoreZeroMonths,
+          items: remainingItems,
+          customColumns: activeTemplate?.columnas_personalizadas,
+          estado_operativo: selectedOrder.estado
+        }
+        projectionService.saveSnapshotToStorage(
+          selectedOrder.id_orden,
+          selectedOrder.numero_orden,
+          updatedSnapshot
+        )
+        await projectionService.updateOrder(selectedOrder.id_orden, {
+          numero_orden: selectedOrder.numero_orden,
+          total_items: remainingItems.length,
+          snapshot_proyeccion: updatedSnapshot
+        })
+        setSelectedOrder((prev) =>
+          prev
+            ? {
+                ...prev,
+                total_items: remainingItems.length,
+                snapshot_proyeccion: updatedSnapshot
+              }
+            : prev
+        )
+        setOrders((prev) =>
+          prev.map((ord) =>
+            ord.id_orden === selectedOrder.id_orden
+              ? { ...ord, total_items: remainingItems.length, snapshot_proyeccion: updatedSnapshot }
+              : ord
+          )
+        )
       }
-      setItems((prev) => prev.filter((i) => i.id_item !== id_item))
+
+      setErrorMsg(null)
       setSuccessMsg(`Producto "${name}" eliminado de la proyección.`)
     } catch (err: any) {
       setErrorMsg(`Error al eliminar: ${err.message}`)
-    }
-  }
-
-  // Generar Orden de Importación Grupal
-  const handleOpenOrderModal = () => {
-    if (selectedItemIds.size === 0) {
-      const autoIds = calculatedRows
-        .filter((r) => r.estado_critico === 'CRITICO' || r.estado_critico === 'REORDEN')
-        .map((r) => r.id_item)
-      if (autoIds.length > 0) {
-        setSelectedItemIds(new Set(autoIds))
-      }
-    }
-
-    const randomNum = Math.floor(100 + Math.random() * 900)
-    setOrderNumber(`IMP-2026-${randomNum}`)
-    setOrderModalOpen(true)
-  }
-
-  const handleConfirmOrder = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setIsCreatingOrder(true)
-    setErrorMsg(null)
-
-    const selectedRows = calculatedRows.filter((r) => selectedItemIds.has(r.id_item))
-    try {
-      const res = await projectionService.createImportOrderFromProjection(
-        orderNumber,
-        orderContainerType,
-        selectedRows
-      )
-
-      if (!res.success) {
-        setErrorMsg(res.error || 'Error al generar la orden.')
-        return
-      }
-
-      setSuccessMsg(
-        `Orden de importación ${orderNumber.toUpperCase()} creada con éxito con ${selectedRows.length} productos calculados.`
-      )
-      setOrderModalOpen(false)
-      setSelectedItemIds(new Set())
-      const updatedOrders = await projectionService.getOrders()
-      setOrders(updatedOrders)
-    } catch (err: any) {
-      setErrorMsg(`Error inesperado: ${err.message}`)
-    } finally {
-      setIsCreatingOrder(false)
     }
   }
 
@@ -1298,6 +1710,35 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
   }
 
   // ==============================================================================
+  // VISTA: RESUMEN DE PROYECCIÓN Y APROBACIÓN PRESUPUESTAL (VENTANA COMPLETA)
+  // ==============================================================================
+  if (viewMode === 'approval_summary' && selectedOrder) {
+    return (
+      <ProjectionSummaryApprovalSubView
+        order={selectedOrder}
+        calculatedRows={calculatedRows.filter((r) => r.compra_sugerida > 0)}
+        onBack={() => setViewMode('matrix')}
+        onConfirmApproval={handleConfirmApprovalAndEmit}
+        isEmitting={isEmittingOrder}
+        readOnly={isOrderLocked}
+      />
+    )
+  }
+
+  // ==============================================================================
+  // VISTA: PACKING LIST Y PLAN DE PALETIZADO COMPLETO (VENTANA COMPLETA)
+  // ==============================================================================
+  if (viewMode === 'packing_list' && packingPlan) {
+    return (
+      <PackingListSubView
+        plan={packingPlan}
+        onBack={() => setViewMode(packingPreviousView || (selectedOrder ? 'matrix' : 'list'))}
+        onOpenReceptions={onOpenReceptions}
+      />
+    )
+  }
+
+  // ==============================================================================
   // VISTA 2: MATRIZ DINÁMICA TIPO EXCEL DE LA ORDEN SELECCIONADA
   // ==============================================================================
   return (
@@ -1320,7 +1761,7 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
           <button
             type="button"
             className="button secondary button-sm"
-            onClick={() => setViewMode('list')}
+            onClick={handleBackToList}
             title="Volver a la lista de órdenes y proyecciones"
             style={{ fontWeight: 600 }}
           >
@@ -1360,14 +1801,18 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
                     selectedOrder.estado === 'RECIBIDA'
                       ? '#EEF8F1'
                       : selectedOrder.estado === 'TRANSITO'
+                      ? 'var(--color-brand-soft)'
+                      : selectedOrder.estado === 'FALTA_APROBACION'
                       ? '#FFF8EE'
-                      : 'var(--color-brand-soft)',
+                      : 'var(--color-canvas)',
                   color:
                     selectedOrder.estado === 'RECIBIDA'
                       ? 'var(--color-success)'
                       : selectedOrder.estado === 'TRANSITO'
+                      ? 'var(--color-brand)'
+                      : selectedOrder.estado === 'FALTA_APROBACION'
                       ? 'var(--color-warning)'
-                      : 'var(--color-brand)',
+                      : 'var(--color-text-secondary)',
                   border: '1px solid var(--color-border)',
                   padding: '2px 8px',
                   borderRadius: '4px',
@@ -1376,10 +1821,12 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
                 }}
               >
                 {selectedOrder.estado === 'RECIBIDA'
-                  ? 'Recibida en almacén'
+                  ? 'Recepcionado completamente'
                   : selectedOrder.estado === 'TRANSITO'
-                  ? 'En tránsito marítimo'
-                  : 'Borrador (en cálculo)'}
+                  ? 'Aprobado y en camino'
+                  : selectedOrder.estado === 'FALTA_APROBACION'
+                  ? 'Falta aprobación'
+                  : 'Borrador'}
               </span>
             </div>
           )}
@@ -1387,34 +1834,40 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
 
         {/* Acciones Rápidas Superiores */}
         <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
-          {/* Botón Principal para Importar Excel de Salidas */}
-          <button
-            type="button"
-            className="button secondary"
-            onClick={() => setExcelModalOpen(true)}
-            title="Cargar archivo Excel con salidas y consumos mensuales hacia agencias"
-            style={{ fontWeight: 600, borderColor: 'var(--color-brand)', color: 'var(--color-brand)' }}
-          >
-            📥 Cargar salidas desde Excel
-          </button>
+          {!isOrderLocked && (
+            <>
+              {/* Botón para Importar Excel de Salidas */}
+              <button
+                type="button"
+                className="button secondary"
+                onClick={() => setExcelModalOpen(true)}
+                title="Cargar archivo Excel con salidas y consumos mensuales hacia agencias"
+                style={{ fontWeight: 600, borderColor: 'var(--color-brand)', color: 'var(--color-brand)' }}
+              >
+                Cargar salidas de Excel
+              </button>
 
-          <button
-            type="button"
-            className="button secondary"
-            onClick={handleSyncLiveStock}
-            disabled={syncingStock}
-            title="Actualizar existencias actuales directamente desde las paletas e inventario físico"
-          >
-            {syncingStock ? 'Sincronizando...' : 'Sincronizar stock'}
-          </button>
-          <button
-            type="button"
-            className="button secondary"
-            onClick={() => setParamsModalOpen(true)}
-            title="Configurar los parámetros globales de lead time y seguridad"
-          >
-            Parámetros
-          </button>
+              <button
+                type="button"
+                className="button secondary"
+                onClick={handleSyncLiveStock}
+                disabled={syncingStock}
+                title="Actualizar existencias actuales directamente desde las paletas e inventario físico"
+              >
+                {syncingStock ? 'Sincronizando...' : 'Sincronizar stock'}
+              </button>
+
+              <button
+                type="button"
+                className="button secondary"
+                onClick={handleSaveOrderSnapshot}
+                title="Guardar avance del cálculo para continuar en otro momento"
+              >
+                Guardar cambios
+              </button>
+            </>
+          )}
+
           <button
             type="button"
             className="button secondary"
@@ -1423,51 +1876,63 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
           >
             Exportar CSV
           </button>
-          <button
-            type="button"
-            className="button secondary"
-            onClick={handleSaveOrderSnapshot}
-            title="Guardar estado de cálculo de esta orden"
-          >
-            Guardar cambios
-          </button>
 
-          {selectedItemIds.size > 0 && (
-            <button
-              type="button"
-              className="button primary button-sm"
-              onClick={handleOpenOrderModal}
-              title="Generar orden de importación con los productos seleccionados"
-            >
-              Generar orden ({selectedItemIds.size})
-            </button>
-          )}
-
-          {selectedOrder?.estado === 'BORRADOR' && (
+          {/* Botón Terminar Proyección: el que más resalta */}
+          {!isOrderLocked && selectedOrder?.estado !== 'FALTA_APROBACION' && (
             <button
               type="button"
               className="button primary"
-              onClick={handleEmitActiveOrder}
-              disabled={isEmittingOrder}
-              title="Confirmar los cálculos y emitir la orden a Tránsito para recepción en Módulo 04"
+              onClick={handleTerminarProyeccion}
+              disabled={isEmittingOrder || calculatedRows.length === 0}
+              title="Culminar el cálculo de la proyección y avanzar a la revisión y aprobación del resumen"
+              style={{
+                fontWeight: 700,
+                backgroundColor: 'var(--color-brand-deep)',
+                borderColor: 'var(--color-brand-deep)',
+                color: '#FFFFFF',
+                padding: '8px 18px',
+                fontSize: '14px',
+                boxShadow: 'none'
+              }}
             >
-              {isEmittingOrder ? 'Emitiendo a tránsito...' : 'Confirmar y emitir a tránsito'}
+              Terminar proyección
             </button>
           )}
 
-          {selectedOrder && (
+          {/* Botón Revisar resumen y aprobar: aparece cuando la proyección ya fue terminada */}
+          {!isOrderLocked && selectedOrder?.estado === 'FALTA_APROBACION' && (
+            <button
+              type="button"
+              className="button primary"
+              onClick={handleGoToApprovalSummary}
+              disabled={isEmittingOrder}
+              title="Revisar cantidades proyectadas, validar recortes presupuestales y autorizar la compra"
+              style={{
+                fontWeight: 700,
+                backgroundColor: 'var(--color-brand)',
+                borderColor: 'var(--color-brand)',
+                color: '#FFFFFF',
+                padding: '8px 18px',
+                fontSize: '14px'
+              }}
+            >
+              Revisar resumen y aprobar
+            </button>
+          )}
+
+          {/* Modo solo lectura para órdenes ya aprobadas */}
+          {isOrderLocked && (
             <button
               type="button"
               className="button secondary"
-              onClick={() => handleOpenPackingPlan()}
-              disabled={isGeneratingPackingPlan}
-              title="Ver desglose de paletas por producto y descargar packing list con códigos para muelle"
+              onClick={() => setViewMode('approval_summary')}
+              title="Consultar el resumen de aprobación presupuestal y decisiones tomadas"
             >
-              {isGeneratingPackingPlan ? 'Generando...' : '📦 Packing List / Paletas'}
+              Ver resumen de aprobación
             </button>
           )}
 
-          {selectedOrder?.estado !== 'BORRADOR' && onOpenReceptions && (
+          {selectedOrder?.estado !== 'BORRADOR' && selectedOrder?.estado !== 'FALTA_APROBACION' && onOpenReceptions && (
             <button
               type="button"
               className="button secondary"
@@ -1479,6 +1944,74 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
           )}
         </div>
       </div>
+
+      {/* Banner de Modo Solo Lectura para Órdenes Emitidas */}
+      {isOrderLocked && selectedOrder && (
+        <div
+          style={{
+            background: 'var(--color-surface)',
+            border: '1px solid var(--color-border)',
+            borderLeft: '4px solid var(--color-brand)',
+            borderRadius: '8px',
+            padding: '14px 18px',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            flexWrap: 'wrap',
+            gap: '12px'
+          }}
+        >
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <strong style={{ fontSize: '15px', color: 'var(--color-brand-deep)' }}>
+                Proyección aprobada — Modo solo lectura
+              </strong>
+              <span
+                className="badge"
+                style={{
+                  background: 'var(--color-brand-soft)',
+                  color: 'var(--color-brand)',
+                  fontWeight: 600
+                }}
+              >
+                {selectedOrder.estado === 'RECIBIDA' ? 'Recepcionado completamente' : 'Aprobado y en camino'}
+              </span>
+            </div>
+            <p className="muted" style={{ margin: '4px 0 0 0', fontSize: '13px' }}>
+              Esta proyección fue aprobada y emitida formalmente. Las cantidades, consumos y fórmulas se conservan congeladas para auditoría y no pueden ser modificadas.
+            </p>
+          </div>
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              className="button secondary button-sm"
+              onClick={() => setViewMode('approval_summary')}
+              title="Consultar las cantidades solicitadas vs aprobadas y motivos"
+            >
+              Ver resumen de aprobación
+            </button>
+            <button
+              type="button"
+              className="button primary button-sm"
+              onClick={() => handleOpenPackingPlan()}
+              disabled={isGeneratingPackingPlan}
+              title="Consultar o descargar el Packing List oficial"
+            >
+              {isGeneratingPackingPlan ? 'Generando...' : 'Ver packing list / paletas'}
+            </button>
+            {onOpenReceptions && (
+              <button
+                type="button"
+                className="button secondary button-sm"
+                onClick={onOpenReceptions}
+                title="Ver estado de recepción en muelle (Módulo 04)"
+              >
+                Ver en recepciones
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* 2. Mensajes informativos y de error */}
       {errorMsg && (
@@ -1533,64 +2066,43 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
             display: 'flex',
             flexDirection: 'column',
             alignItems: 'center',
-            gap: '10px'
+            gap: '12px'
           }}
         >
           <strong style={{ fontSize: '16px', color: 'var(--color-brand-deep)' }}>
             Esta orden no tiene consumos mensuales cargados
           </strong>
           <p style={{ margin: 0, fontSize: '13px', color: 'var(--color-text-secondary)', maxWidth: '580px' }}>
-            Las órdenes nuevas inician sin datos de meses previos. Carga el archivo Excel con las salidas hacia las agencias (con columnas de Fecha, Producto y Cantidad) para generar automáticamente las columnas de meses y calcular la proyección.
+            Las órdenes nuevas inician sin datos de meses previos. Puedes agregar los meses manualmente uno a uno o cargar el archivo Excel con las salidas hacia las agencias para generar automáticamente las columnas y calcular la proyección.
           </p>
-          <button
-            type="button"
-            className="button primary"
-            onClick={() => setExcelModalOpen(true)}
-          >
-            📥 Cargar salidas desde Excel
-          </button>
+          <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', justifyContent: 'center' }}>
+            {!isOrderLocked && (
+              <button
+                type="button"
+                className="button primary"
+                onClick={() => setAddMonthModalOpen(true)}
+                style={{ fontWeight: 600 }}
+              >
+                + Agregar mes
+              </button>
+            )}
+            <button
+              type="button"
+              className="button secondary"
+              onClick={() => setExcelModalOpen(true)}
+              style={{ fontWeight: 600, color: 'var(--color-brand)', borderColor: 'var(--color-brand)' }}
+            >
+              Cargar salidas de Excel
+            </button>
+          </div>
         </div>
       )}
 
-      {/* 3. Selector de Pestañas de Plantilla */}
-      <div
-        className="module-tabs"
-        style={{
-          display: 'flex',
-          borderBottom: '1px solid var(--color-border)',
-          gap: '12px'
-        }}
-      >
-        {templates.map((t) => {
-          const isActive = t.id_plantilla === selectedTemplateId
-          return (
-            <button
-              key={t.id_plantilla}
-              type="button"
-              onClick={() => void handleSelectTemplate(t.id_plantilla)}
-              style={{
-                background: 'transparent',
-                border: 'none',
-                borderBottom: isActive ? '3px solid var(--color-brand)' : '3px solid transparent',
-                padding: '10px 16px',
-                fontWeight: isActive ? 600 : 500,
-                color: isActive ? 'var(--color-brand)' : 'var(--color-text-secondary)',
-                cursor: 'pointer',
-                fontFamily: 'var(--font-body)',
-                fontSize: '15px'
-              }}
-            >
-              {t.nombre} ({t.codigo})
-            </button>
-          )
-        })}
-      </div>
-
-      {/* 4. Tira Horizontal de Indicadores Clave (skill_design.md) */}
+      {/* 3. Tira de Indicadores Clave */}
       <section className="indicator-strip" aria-label="Resumen de proyecciones">
         <div className="indicator-card">
-          <span className="indicator-label">Productos analizados</span>
-          <span className="indicator-value">{loading ? '—' : metrics.total}</span>
+          <span className="indicator-label">Productos en la tabla</span>
+          <span className="indicator-value">{loading ? '—' : items.length}</span>
           <span className="indicator-context">En la matriz activa</span>
         </div>
 
@@ -1615,35 +2127,12 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
           <span className="indicator-context">Menos de 1 mes de stock</span>
         </div>
 
-        <div
-          className="indicator-card"
-          style={{
-            borderColor: metrics.reorden > 0 ? 'var(--color-warning)' : 'var(--color-border)'
-          }}
-        >
-          <span
-            className="indicator-label"
-            style={{ color: metrics.reorden > 0 ? 'var(--color-warning)' : 'inherit' }}
-          >
-            Ventana de reorden
-          </span>
-          <span
-            className="indicator-value"
-            style={{ color: metrics.reorden > 0 ? 'var(--color-warning)' : 'inherit' }}
-          >
-            {loading ? '—' : metrics.reorden}
-          </span>
-          <span className="indicator-context">
-            Entre 1 y {activeTemplate?.lead_time_meses || 3} meses de stock
-          </span>
-        </div>
-
         <div className="indicator-card">
-          <span className="indicator-label">Compra total sugerida</span>
+          <span className="indicator-label">Meses de promedio</span>
           <span className="indicator-value">
-            {loading ? '—' : metrics.totalCompra.toLocaleString('es-PE')}
+            {loading ? '—' : activeMonthsInAverage.length} {activeMonthsInAverage.length === 1 ? 'mes' : 'meses'}
           </span>
-          <span className="indicator-context">Unidades calculadas</span>
+          <span className="indicator-context">Rango seleccionado</span>
         </div>
       </section>
 
@@ -1690,7 +2179,7 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
                     color: 'var(--color-text-primary)'
                   }}
                 >
-                  Rango de meses para cálculo de promedio mensual (Promedio)
+                  Rango de meses para cálculo de promedio mensual
                 </h3>
               </div>
               <p
@@ -1700,28 +2189,41 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
                   color: 'var(--color-text-secondary)'
                 }}
               >
-                Selecciona de qué mes a qué mes se calculará el consumo promedio de cada producto:
+                Indica de qué mes a qué mes se calculará el consumo promedio de cada producto:
               </p>
             </div>
 
-            {/* Contador de meses activos */}
-            <div
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '8px',
-                padding: '4px 10px',
-                borderRadius: '4px',
-                background: 'var(--color-brand-soft)',
-                color: 'var(--color-brand-deep)',
-                fontSize: '13px',
-                fontWeight: 600
-              }}
-            >
-              <span>{activeMonthsInAverage.length} meses en promedio:</span>
-              <span style={{ fontWeight: 500, color: 'var(--color-brand)' }}>
-                {activeMonthsInAverage.join(', ')}
-              </span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+              <div
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  padding: '4px 10px',
+                  borderRadius: '4px',
+                  background: 'var(--color-brand-soft)',
+                  color: 'var(--color-brand-deep)',
+                  fontSize: '13px',
+                  fontWeight: 600
+                }}
+              >
+                <span>{activeMonthsInAverage.length} meses en promedio:</span>
+                <span style={{ fontWeight: 500, color: 'var(--color-brand)' }}>
+                  {activeMonthsInAverage.join(', ')}
+                </span>
+              </div>
+
+              {!isOrderLocked && (
+                <button
+                  type="button"
+                  className="button secondary button-sm"
+                  onClick={() => setAddMonthModalOpen(true)}
+                  title="Añadir una columna de mes adicional hacia adelante"
+                  style={{ fontWeight: 600 }}
+                >
+                  + Agregar mes hacia adelante
+                </button>
+              )}
             </div>
           </div>
 
@@ -1961,88 +2463,219 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
         </div>
       )}
 
-      {/* 7. Barra de Búsqueda, Filtros y Botones de Agregar */}
+      {/* 7. Barra de Búsqueda y Acciones Esenciales */}
       <div
         style={{
           display: 'flex',
           justifyContent: 'space-between',
           alignItems: 'center',
           flexWrap: 'wrap',
-          gap: '12px'
+          gap: '12px',
+          position: 'relative'
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flex: 1, minWidth: '260px' }}>
-          <input
-            type="search"
-            placeholder="Buscar por nombre de producto o suministro..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
+        {/* Buscador interactivo o aviso de matriz congelada */}
+        {isOrderLocked ? (
+          <div
             style={{
-              width: '100%',
-              maxWidth: '380px',
-              padding: '8px 12px',
-              border: '1px solid var(--color-border)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              padding: '8px 14px',
+              background: 'var(--color-canvas)',
               borderRadius: '6px',
-              background: 'var(--color-surface)',
-              color: 'var(--color-text-primary)',
-              fontFamily: 'var(--font-body)',
-              fontSize: '14px'
+              border: '1px solid var(--color-border)',
+              fontSize: '13px',
+              color: 'var(--color-text-secondary)'
             }}
-          />
-        </div>
-
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-            <span style={{ fontSize: '13px', color: 'var(--color-text-secondary)', marginRight: '4px' }}>
-              Estado:
-            </span>
-            {(['TODOS', 'CRITICO', 'REORDEN', 'OPTIMO'] as const).map((st) => {
-              const labels = {
-                TODOS: 'Todos',
-                CRITICO: 'Crítico (< 1 mes)',
-                REORDEN: 'Reordenar (1-3 meses)',
-                OPTIMO: 'Abastecido'
-              }
-              const isSel = statusFilter === st
-              return (
-                <button
-                  key={st}
-                  type="button"
-                  className={`button button-sm ${isSel ? 'primary' : 'secondary'}`}
-                  onClick={() => setStatusFilter(st)}
-                >
-                  {labels[st]}
-                </button>
-              )
-            })}
+          >
+            <span>Matriz congelada: no se pueden agregar ni eliminar productos de una orden emitida a tránsito.</span>
+          </div>
+        ) : (
+          <div
+            ref={searchWrapperRef}
+            style={{
+              position: 'relative',
+              flex: 1,
+              minWidth: '280px',
+              maxWidth: '500px'
+            }}
+          >
+          <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+            <input
+              type="text"
+              placeholder="Busca por nombre de producto..."
+              value={searchTerm}
+              onChange={(e) => {
+                setSearchTerm(e.target.value)
+                setIsSearchDropdownOpen(true)
+              }}
+              onFocus={() => {
+                setIsSearchDropdownOpen(true)
+                void loadCatalogProductsFromDB()
+              }}
+              style={{
+                width: '100%',
+                padding: '9px 36px 9px 14px',
+                border: '1px solid var(--color-border)',
+                borderRadius: '6px',
+                background: 'var(--color-surface)',
+                color: 'var(--color-text-primary)',
+                fontFamily: 'var(--font-body)',
+                fontSize: '14px'
+              }}
+            />
+            {searchTerm && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSearchTerm('')
+                  setIsSearchDropdownOpen(false)
+                }}
+                style={{
+                  position: 'absolute',
+                  right: '10px',
+                  background: 'none',
+                  border: 'none',
+                  color: 'var(--color-text-secondary)',
+                  cursor: 'pointer',
+                  fontSize: '14px',
+                  padding: '2px 4px'
+                }}
+                title="Limpiar búsqueda"
+              >
+                ✕
+              </button>
+            )}
           </div>
 
-          <button
-            type="button"
-            className="button secondary button-sm"
-            onClick={() => setAddColumnModalOpen(true)}
-            title="Añadir una nueva columna calculada con ecuación Excel"
-            style={{ fontWeight: 600, color: 'var(--color-brand)', borderColor: 'var(--color-brand)' }}
-          >
-            + Agregar columna
-          </button>
-          <button
-            type="button"
-            className="button secondary button-sm"
-            onClick={() => setAddMonthModalOpen(true)}
-            title="Añadir una columna de mes adicional al histórico"
-          >
-            + Agregar mes
-          </button>
-          <button
-            type="button"
-            className="button secondary button-sm"
-            onClick={() => setAddProductModalOpen(true)}
-            title="Añadir un nuevo producto a la matriz"
-          >
-            + Agregar producto
-          </button>
+          {/* Menú flotante interactivo con productos reales de la base de datos */}
+          {isSearchDropdownOpen && searchTerm.trim().length > 0 && (
+            <div
+              style={{
+                position: 'absolute',
+                top: 'calc(100% + 4px)',
+                left: 0,
+                right: 0,
+                background: 'var(--color-surface)',
+                border: '1px solid var(--color-border)',
+                borderRadius: '6px',
+                boxShadow: '0 6px 18px rgba(0,0,0,0.1)',
+                zIndex: 60,
+                maxHeight: '340px',
+                overflowY: 'auto'
+              }}
+            >
+              <div
+                style={{
+                  padding: '8px 12px',
+                  background: 'var(--color-canvas)',
+                  borderBottom: '1px solid var(--color-border)',
+                  fontSize: '12px',
+                  fontWeight: 600,
+                  color: 'var(--color-text-secondary)',
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center'
+                }}
+              >
+                <span>Productos en base de datos ({matchingCatalogProducts.length})</span>
+                <span style={{ fontSize: '11px', fontWeight: 400 }}>Presiona Añadir para incorporar</span>
+              </div>
+
+              {matchingCatalogProducts.length > 0 ? (
+                matchingCatalogProducts.map((p) => {
+                  const isAdded = items.some(
+                    (it) => it.nombre_producto.toUpperCase() === p.nombre.toUpperCase()
+                  )
+                  return (
+                    <div
+                      key={p.sku || p.nombre}
+                      style={{
+                        padding: '10px 14px',
+                        borderBottom: '1px solid var(--color-border)',
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        gap: '12px',
+                        background: isAdded ? '#FAFCFD' : 'var(--color-surface)'
+                      }}
+                    >
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontWeight: 600, fontSize: '14px', color: 'var(--color-text-primary)' }}>
+                          {p.nombre}
+                        </div>
+                        <div style={{ fontSize: '12px', color: 'var(--color-text-secondary)' }}>
+                          {p.sku ? `SKU: ${p.sku}` : 'En base de datos'}
+                          {liveStockMap.has(p.nombre) && (
+                            <span style={{ marginLeft: '8px' }}>
+                              · Stock físico: {liveStockMap.get(p.nombre)?.toLocaleString('es-PE')}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      {isAdded ? (
+                        <span
+                          style={{
+                            fontSize: '12px',
+                            fontWeight: 600,
+                            color: 'var(--color-success)',
+                            padding: '4px 8px',
+                            background: '#F1F8F4',
+                            borderRadius: '4px',
+                            whiteSpace: 'nowrap'
+                          }}
+                        >
+                          En la proyección
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          className="button primary button-sm"
+                          onClick={() => handleQuickAddProduct(p)}
+                          style={{ whiteSpace: 'nowrap' }}
+                        >
+                          + Añadir
+                        </button>
+                      )}
+                    </div>
+                  )
+                })
+              ) : (
+                <div style={{ padding: '16px 14px', textAlign: 'center', fontSize: '13px', color: 'var(--color-text-secondary)' }}>
+                  No se encontró ningún producto con ese nombre registrado en tu base de datos.
+                </div>
+              )}
+            </div>
+          )}
         </div>
+        )}
+
+        {/* Checkbox para ignorar meses con consumo en 0 */}
+        {!isOrderLocked && (
+          <label
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              fontSize: '13px',
+              fontWeight: 500,
+              color: 'var(--color-text-primary)',
+              cursor: 'pointer',
+              userSelect: 'none'
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={ignoreZeroMonths}
+              onChange={(e) =>
+                void handleApplyMonthRange(startMonth, endMonth, e.target.checked)
+              }
+            />
+            Ignorar meses con consumo en 0 para el promedio
+          </label>
+        )}
       </div>
 
       {/* =========================================================================
@@ -2097,7 +2730,31 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
                         : `Columna ${m}: histórico informativo (fuera del rango de promedio)`
                     }
                   >
-                    <div>{m}</div>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '4px' }}>
+                      <span>{m}</span>
+                      {!isOrderLocked && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            handleDeleteMonth(m)
+                          }}
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            color: 'var(--color-text-secondary)',
+                            cursor: 'pointer',
+                            fontSize: '11px',
+                            padding: '1px 3px',
+                            borderRadius: '3px',
+                            lineHeight: 1
+                          }}
+                          title={`Eliminar columna de mes ${m}`}
+                        >
+                          ✕
+                        </button>
+                      )}
+                    </div>
                     {isInAverage && (
                       <span
                         style={{
@@ -2107,7 +2764,7 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
                           fontWeight: 600
                         }}
                       >
-                        ✓ Promedio
+                        Promedio
                       </span>
                     )}
                   </th>
@@ -2459,9 +3116,18 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
                     (activeTemplate?.columnas_personalizadas?.length || 0) +
                     1
                   }
-                  style={{ padding: '32px', textAlign: 'center', color: 'var(--color-text-secondary)' }}
+                  style={{ padding: '48px 16px', textAlign: 'center', color: 'var(--color-text-secondary)' }}
                 >
-                  No se encontraron productos con los criterios especificados.
+                  <div style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'center', gap: '8px' }}>
+                    <strong style={{ fontSize: '15px', color: 'var(--color-text-primary)' }}>
+                      {searchTerm.trim() ? `No se encontraron productos para "${searchTerm.trim()}"` : 'No hay productos en esta proyección'}
+                    </strong>
+                    <p style={{ margin: 0, fontSize: '13px', maxWidth: '480px', lineHeight: '1.4' }}>
+                      {searchTerm.trim()
+                        ? 'Puedes añadir este producto a la proyección directamente con el botón "+ Añadir" en el buscador superior.'
+                        : 'Para comenzar la proyección, busca un producto en el buscador superior y presiona "Añadir", o haz clic en "Cargar salidas desde Excel" para importar consumos mensuales.'}
+                    </p>
+                  </div>
                 </td>
               </tr>
             ) : (
@@ -2506,6 +3172,7 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
                     <td style={{ padding: '8px', textAlign: 'center' }}>
                       <input
                         type="checkbox"
+                        disabled={isOrderLocked}
                         checked={isSelected}
                         onChange={() => handleToggleSelectRow(r.id_item)}
                       />
@@ -2537,6 +3204,7 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
                         >
                           <input
                             type="number"
+                            disabled={isOrderLocked}
                             defaultValue={val === 0 ? '' : val}
                             onBlur={(e) =>
                               handleCellChange(r.id_item, `month_${m}`, e.target.value)
@@ -2551,9 +3219,10 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
                               textAlign: 'right',
                               fontSize: '12px',
                               color: val < 0 ? 'var(--color-text-primary)' : 'var(--color-text-secondary)',
-                              fontWeight: isInAvg ? 600 : 400
+                              fontWeight: isInAvg ? 600 : 400,
+                              cursor: isOrderLocked ? 'default' : 'text'
                             }}
-                            onFocus={(e) => (e.target.style.border = '1px solid var(--color-brand)')}
+                            onFocus={(e) => !isOrderLocked && (e.target.style.border = '1px solid var(--color-brand)')}
                             onBlurCapture={(e) => (e.target.style.border = '1px solid transparent')}
                           />
                         </td>
@@ -2572,6 +3241,7 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
                       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '2px' }}>
                         <input
                           type="number"
+                          disabled={isOrderLocked}
                           defaultValue={r.promedio_final || ''}
                           onBlur={(e) =>
                             handleCellChange(r.id_item, 'promedio_manual', e.target.value)
@@ -2592,12 +3262,13 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
                             textAlign: 'right',
                             fontWeight: 600,
                             fontSize: '13px',
-                            color: hasManualAverage ? 'var(--color-brand)' : 'var(--color-text-primary)'
+                            color: hasManualAverage ? 'var(--color-brand)' : 'var(--color-text-primary)',
+                            cursor: isOrderLocked ? 'default' : 'text'
                           }}
-                          onFocus={(e) => (e.target.style.border = '1px solid var(--color-brand)')}
+                          onFocus={(e) => !isOrderLocked && (e.target.style.border = '1px solid var(--color-brand)')}
                           onBlurCapture={(e) => (e.target.style.border = '1px solid transparent')}
                         />
-                        {hasManualAverage && (
+                        {hasManualAverage && !isOrderLocked && (
                           <button
                             type="button"
                             onClick={() => handleResetManualAverage(r.id_item)}
@@ -2621,9 +3292,10 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
                     <td style={{ padding: '4px 6px', textAlign: 'right' }}>
                       <input
                         type="number"
+                        disabled={isOrderLocked}
                         defaultValue={r.stock_real}
                         onBlur={(e) => handleCellChange(r.id_item, 'stock_manual', e.target.value)}
-                        title="Stock real actual en almacén (haz clic para ajustar manualmente)"
+                        title={isOrderLocked ? `Stock real registrado en la orden: ${r.stock_real}` : "Stock real actual en almacén (haz clic para ajustar manualmente)"}
                         style={{
                           width: '100%',
                           minWidth: '75px',
@@ -2634,9 +3306,10 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
                           textAlign: 'right',
                           fontWeight: 600,
                           fontSize: '13px',
-                          color: r.stock_real <= 0 ? 'var(--color-danger)' : 'var(--color-text-primary)'
+                          color: r.stock_real <= 0 ? 'var(--color-danger)' : 'var(--color-text-primary)',
+                          cursor: isOrderLocked ? 'default' : 'text'
                         }}
-                        onFocus={(e) => (e.target.style.border = '1px solid var(--color-brand)')}
+                        onFocus={(e) => !isOrderLocked && (e.target.style.border = '1px solid var(--color-brand)')}
                         onBlurCapture={(e) => (e.target.style.border = '1px solid transparent')}
                       />
                     </td>
@@ -2661,6 +3334,7 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
                       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '2px' }}>
                         <input
                           type="number"
+                          disabled={isOrderLocked}
                           defaultValue={r.stock_min_redondeado}
                           onBlur={(e) =>
                             handleCellChange(r.id_item, 'stock_redondeado_manual', e.target.value)
@@ -2680,12 +3354,13 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
                             textAlign: 'right',
                             fontWeight: 600,
                             fontSize: '13px',
-                            color: hasManualRound ? 'var(--color-brand)' : 'var(--color-text-primary)'
+                            color: hasManualRound ? 'var(--color-brand)' : 'var(--color-text-primary)',
+                            cursor: isOrderLocked ? 'default' : 'text'
                           }}
-                          onFocus={(e) => (e.target.style.border = '1px solid var(--color-brand)')}
+                          onFocus={(e) => !isOrderLocked && (e.target.style.border = '1px solid var(--color-brand)')}
                           onBlurCapture={(e) => (e.target.style.border = '1px solid transparent')}
                         />
-                        {hasManualRound && (
+                        {hasManualRound && !isOrderLocked && (
                           <button
                             type="button"
                             onClick={() => handleResetManualRound(r.id_item)}
@@ -2786,21 +3461,25 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
 
                     {/* Botón de eliminar fila */}
                     <td style={{ padding: '4px 8px', textAlign: 'center' }}>
-                      <button
-                        type="button"
-                        onClick={() => void handleDeleteItem(r.id_item, r.nombre_producto)}
-                        title="Eliminar producto de la matriz"
-                        style={{
-                          background: 'transparent',
-                          border: 'none',
-                          color: 'var(--color-danger)',
-                          cursor: 'pointer',
-                          fontSize: '12px',
-                          padding: '4px'
-                        }}
-                      >
-                        Eliminar
-                      </button>
+                      {!isOrderLocked ? (
+                        <button
+                          type="button"
+                          onClick={() => void handleDeleteItem(r.id_item, r.nombre_producto)}
+                          title="Eliminar producto de la matriz"
+                          style={{
+                            background: 'transparent',
+                            border: 'none',
+                            color: 'var(--color-danger)',
+                            cursor: 'pointer',
+                            fontSize: '12px',
+                            padding: '4px'
+                          }}
+                        >
+                          Eliminar
+                        </button>
+                      ) : (
+                        <span className="muted" style={{ fontSize: '11px' }}>—</span>
+                      )}
                     </td>
                   </tr>
                 )
@@ -2874,7 +3553,7 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
                 }}
               >
                 <div style={{ fontWeight: 600, marginBottom: '4px' }}>
-                  💡 ¿Cómo funciona el cálculo de Duración?
+                  ¿Cómo funciona el cálculo de duración?
                 </div>
                 <div style={{ lineHeight: '1.4' }}>
                   Indica cuántos meses y días te durará tu inventario físico actual antes de quedarte en cero (quiebre de existencias).
@@ -3183,7 +3862,7 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
                     fontWeight: 600
                   }}
                 >
-                  {formulaValidation.valid ? '✓ Sintaxis válida' : `✕ ${formulaValidation.error}`}
+                  {formulaValidation.valid ? 'Sintaxis válida' : `Error: ${formulaValidation.error}`}
                 </span>
               </div>
               <input
@@ -3706,8 +4385,8 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
                     }}
                   >
                     {newColumnFormulaValidation.valid
-                      ? '✓ Sintaxis válida'
-                      : `✕ ${newColumnFormulaValidation.error}`}
+                      ? 'Sintaxis válida'
+                      : `Error: ${newColumnFormulaValidation.error}`}
                   </span>
                 </div>
                 <input
@@ -4252,186 +4931,7 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
         </div>
       )}
 
-      {/* =========================================================================
-          MODAL 4: Generar Orden de Importación Grupal
-          ========================================================================= */}
-      {orderModalOpen && (
-        <div className="modal-backdrop">
-          <div className="modal-card" style={{ maxWidth: '620px' }}>
-            <div
-              style={{
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                marginBottom: '16px'
-              }}
-            >
-              <h2
-                style={{
-                  margin: 0,
-                  fontSize: '20px',
-                  fontWeight: 600,
-                  color: 'var(--color-text-primary)'
-                }}
-              >
-                Generar orden de importación consolidada
-              </h2>
-              <button
-                type="button"
-                className="modal-close-btn"
-                onClick={() => setOrderModalOpen(false)}
-              >
-                ✕
-              </button>
-            </div>
-
-            <p style={{ margin: '0 0 16px 0', fontSize: '13px', color: 'var(--color-text-secondary)' }}>
-              Esta acción creará una orden oficial de importación vinculada al Módulo 04 (Recepciones
-              RFID) con las cantidades calculadas por la matriz.
-            </p>
-
-            <form
-              onSubmit={(e) => void handleConfirmOrder(e)}
-              style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}
-            >
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
-                <div>
-                  <label
-                    style={{
-                      display: 'block',
-                      fontSize: '13px',
-                      fontWeight: 600,
-                      color: 'var(--color-text-primary)',
-                      marginBottom: '4px'
-                    }}
-                  >
-                    Número de orden oficial *
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={orderNumber}
-                    onChange={(e) => setOrderNumber(e.target.value.toUpperCase())}
-                    style={{
-                      width: '100%',
-                      padding: '8px 12px',
-                      border: '1px solid var(--color-border)',
-                      borderRadius: '6px',
-                      background: 'var(--color-surface)',
-                      color: 'var(--color-text-primary)',
-                      fontFamily: 'var(--font-body)',
-                      fontSize: '14px'
-                    }}
-                  />
-                </div>
-
-                <div>
-                  <label
-                    style={{
-                      display: 'block',
-                      fontSize: '13px',
-                      fontWeight: 600,
-                      color: 'var(--color-text-primary)',
-                      marginBottom: '4px'
-                    }}
-                  >
-                    Tipo de contenedor asignado
-                  </label>
-                  <select
-                    value={orderContainerType}
-                    onChange={(e) => setOrderContainerType(e.target.value as any)}
-                    style={{
-                      width: '100%',
-                      padding: '8px 12px',
-                      border: '1px solid var(--color-border)',
-                      borderRadius: '6px',
-                      background: 'var(--color-surface)',
-                      color: 'var(--color-text-primary)',
-                      fontFamily: 'var(--font-body)',
-                      fontSize: '14px'
-                    }}
-                  >
-                    <option value="40FT">Contenedor 40 pies (40FT)</option>
-                    <option value="20FT">Contenedor 20 pies (20FT)</option>
-                    <option value="LCL">Carga suelta consolidada (LCL)</option>
-                  </select>
-                </div>
-              </div>
-
-              {/* Lista resumida de productos a incluir */}
-              <div>
-                <label
-                  style={{
-                    display: 'block',
-                    fontSize: '13px',
-                    fontWeight: 600,
-                    color: 'var(--color-text-primary)',
-                    marginBottom: '6px'
-                  }}
-                >
-                  Productos seleccionados ({selectedItemIds.size}):
-                </label>
-                <div
-                  style={{
-                    maxHeight: '180px',
-                    overflowY: 'auto',
-                    border: '1px solid var(--color-border)',
-                    borderRadius: '6px',
-                    background: 'var(--color-canvas)',
-                    padding: '8px 12px'
-                  }}
-                >
-                  {calculatedRows
-                    .filter((r) => selectedItemIds.has(r.id_item))
-                    .map((r) => (
-                      <div
-                        key={r.id_item}
-                        style={{
-                          display: 'flex',
-                          justifyContent: 'space-between',
-                          padding: '4px 0',
-                          borderBottom: '1px solid #E2E8F0',
-                          fontSize: '12px'
-                        }}
-                      >
-                        <span style={{ fontWeight: 500, color: 'var(--color-text-primary)' }}>
-                          {r.nombre_producto}
-                        </span>
-                        <span style={{ fontWeight: 700, color: 'var(--color-brand)' }}>
-                          {r.compra_sugerida.toLocaleString('es-PE')} und.
-                        </span>
-                      </div>
-                    ))}
-                </div>
-              </div>
-
-              <div
-                style={{
-                  display: 'flex',
-                  justifyContent: 'flex-end',
-                  gap: '10px',
-                  marginTop: '12px'
-                }}
-              >
-                <button
-                  type="button"
-                  className="button secondary"
-                  onClick={() => setOrderModalOpen(false)}
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="submit"
-                  className="button primary"
-                  disabled={isCreatingOrder || selectedItemIds.size === 0}
-                >
-                  {isCreatingOrder ? 'Creando orden...' : 'Confirmar y generar orden'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
+      {/* Modal de Importación de Consumos Mensuales desde Excel */}
 
       {/* Modal de Importación de Consumos Mensuales desde Excel */}
       <ExcelImportModal
@@ -4441,377 +4941,6 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
         items={items}
         onApply={handleApplyExcelOutputs}
       />
-
-      {/* Modal de Plan de Paletizado, Desglose de Empaque y Packing List */}
-      {packingPlanModal && (
-        <div className="modal-backdrop" role="dialog" aria-modal="true">
-          <div className="modal-card" style={{ maxWidth: '880px', width: '92%' }}>
-            <div className="modal-header">
-              <div>
-                <span
-                  style={{
-                    fontSize: '12px',
-                    fontWeight: 600,
-                    color: 'var(--color-brand)',
-                    textTransform: 'uppercase',
-                    letterSpacing: '0.5px'
-                  }}
-                >
-                  Plan de Paletizado y Rótulos de Muelle
-                </span>
-                <h2
-                  className="modal-title"
-                  style={{ margin: '2px 0 0 0', fontSize: '20px', color: 'var(--color-brand-deep)' }}
-                >
-                  Packing List — Orden {packingPlanModal.numero_orden}
-                </h2>
-              </div>
-              <button
-                type="button"
-                className="modal-close-btn"
-                onClick={() => setPackingPlanModal(null)}
-              >
-                ✕
-              </button>
-            </div>
-
-            <p className="muted" style={{ margin: '0 0 16px 0', fontSize: '13px' }}>
-              Desglose físico calculado según las reglas estándar de estiba del catálogo. Cada paleta cuenta con su código de barra correlativo reservado con el prefijo <strong>{packingPlanModal.prefijo_almacen}</strong>, listo para descarga y etiquetado en el muelle de descarga.
-            </p>
-
-            {/* Tira de Métricas del Contenedor */}
-            <div className="indicator-strip" style={{ marginBottom: '16px' }}>
-              <div className="indicator-card">
-                <span className="indicator-label">Unidades totales</span>
-                <span className="indicator-value">{packingPlanModal.total_unidades.toLocaleString('es-PE')}</span>
-                <span className="indicator-context">Contenedor {packingPlanModal.contenedor}</span>
-              </div>
-              <div className="indicator-card">
-                <span className="indicator-label">Cajas totales</span>
-                <span className="indicator-value">{packingPlanModal.total_cajas.toLocaleString('es-PE')}</span>
-                <span className="indicator-context">En todo el embarque</span>
-              </div>
-              <div className="indicator-card">
-                <span className="indicator-label">Paletas completas</span>
-                <span className="indicator-value" style={{ color: 'var(--color-brand)' }}>
-                  {packingPlanModal.total_paletas_completas}
-                </span>
-                <span className="indicator-context">Carga estándar homogénea</span>
-              </div>
-              <div className="indicator-card">
-                <span className="indicator-label">Cajas pucho / parciales</span>
-                <span className="indicator-value" style={{ color: packingPlanModal.total_puchos > 0 ? 'var(--color-warning)' : 'inherit' }}>
-                  {packingPlanModal.total_puchos}
-                </span>
-                <span className="indicator-context">
-                  {packingPlanModal.total_puchos > 0 ? 'Paleta con cajas sueltas' : 'Sin sobrantes sueltos'}
-                </span>
-              </div>
-              <div className="indicator-card">
-                <span className="indicator-label">Total bultos esperados</span>
-                <span className="indicator-value" style={{ color: 'var(--color-success)' }}>
-                  {packingPlanModal.total_bultos_previstos}
-                </span>
-                <span className="indicator-context">+5 tags reserva muelle</span>
-              </div>
-            </div>
-
-            {/* Pestañas de Vista: Resumen vs Lista Completa de Etiquetas */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', flexWrap: 'wrap', gap: '8px' }}>
-              <div style={{ display: 'flex', gap: '6px' }}>
-                <button
-                  type="button"
-                  className={`button ${packingModalTab === 'summary' ? 'primary' : 'secondary'} button-sm`}
-                  onClick={() => setPackingModalTab('summary')}
-                >
-                  Resumen por producto ({packingPlanModal.productos.length})
-                </button>
-                <button
-                  type="button"
-                  className={`button ${packingModalTab === 'tags' ? 'primary' : 'secondary'} button-sm`}
-                  onClick={() => setPackingModalTab('tags')}
-                >
-                  🏷️ Lista completa de códigos separados ({allIndividualPallets.length})
-                </button>
-              </div>
-              {copiedTag && (
-                <span style={{ fontSize: '12px', color: 'var(--color-success)', fontWeight: 600 }}>
-                  ✓ Código {copiedTag} copiado al portapapeles
-                </span>
-              )}
-            </div>
-
-            {/* Vista 1: Resumen por Producto */}
-            {packingModalTab === 'summary' && (
-              <div className="table-wrap" style={{ maxHeight: '300px', overflowY: 'auto', marginBottom: '14px' }}>
-                <table>
-                  <thead>
-                    <tr>
-                      <th>SKU</th>
-                      <th>Producto</th>
-                      <th style={{ textAlign: 'right' }}>Cantidad</th>
-                      <th style={{ textAlign: 'right' }}>Unid/Caja</th>
-                      <th style={{ textAlign: 'right' }}>Cajas/Paleta</th>
-                      <th style={{ textAlign: 'center' }}>Paletas completas</th>
-                      <th style={{ textAlign: 'center' }}>Cajas pucho</th>
-                      <th>Códigos asignados</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {packingPlanModal.productos.map((prod) => {
-                      const completasTags = prod.paletas.filter((p) => p.tipo === 'COMPLETO').map((p) => p.uid_tag)
-                      const puchoTag = prod.paletas.find((p) => p.tipo === 'PUCHO')?.uid_tag
-
-                      return (
-                        <tr key={prod.id_producto}>
-                          <td>
-                            <code style={{ fontSize: '12px', fontWeight: 600, color: 'var(--color-brand-deep)' }}>
-                              {prod.sku}
-                            </code>
-                          </td>
-                          <td>
-                            <strong style={{ color: 'var(--color-text-primary)' }}>{prod.nombre}</strong>
-                          </td>
-                          <td style={{ textAlign: 'right', fontWeight: 600 }}>
-                            {prod.cantidad_pedida.toLocaleString('es-PE')}
-                          </td>
-                          <td style={{ textAlign: 'right' }}>{prod.unidades_por_caja}</td>
-                          <td style={{ textAlign: 'right' }}>{prod.cajas_por_paleta}</td>
-                          <td style={{ textAlign: 'center' }}>
-                            <span
-                              style={{
-                                background: 'var(--color-brand-soft)',
-                                color: 'var(--color-brand-deep)',
-                                padding: '2px 8px',
-                                borderRadius: '4px',
-                                fontWeight: 600,
-                                fontSize: '12px'
-                              }}
-                            >
-                              {prod.paletas_completas} paleta(s)
-                            </span>
-                          </td>
-                          <td style={{ textAlign: 'center' }}>
-                            {prod.cajas_pucho > 0 ? (
-                              <span
-                                style={{
-                                  background: '#FFF8EE',
-                                  color: 'var(--color-warning)',
-                                  border: '1px solid #F5D399',
-                                  padding: '2px 8px',
-                                  borderRadius: '4px',
-                                  fontWeight: 600,
-                                  fontSize: '12px'
-                                }}
-                              >
-                                {prod.cajas_pucho} caja(s)
-                              </span>
-                            ) : (
-                              <span className="muted" style={{ fontSize: '12px' }}>0</span>
-                            )}
-                          </td>
-                          <td>
-                            <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap', maxHeight: '70px', overflowY: 'auto' }}>
-                              {completasTags.map((t) => (
-                                <code
-                                  key={t}
-                                  onClick={() => handleCopyTag(t)}
-                                  style={{
-                                    background: 'var(--color-canvas)',
-                                    border: '1px solid var(--color-border)',
-                                    padding: '1px 5px',
-                                    borderRadius: '3px',
-                                    fontSize: '11px',
-                                    fontWeight: 600,
-                                    cursor: 'pointer'
-                                  }}
-                                  title="Clic para copiar código"
-                                >
-                                  {t}
-                                </code>
-                              ))}
-                              {puchoTag && (
-                                <code
-                                  key={puchoTag}
-                                  onClick={() => handleCopyTag(puchoTag)}
-                                  style={{
-                                    background: '#FFF8EE',
-                                    border: '1px solid #F5D399',
-                                    color: 'var(--color-warning)',
-                                    padding: '1px 5px',
-                                    borderRadius: '3px',
-                                    fontSize: '11px',
-                                    fontWeight: 600,
-                                    cursor: 'pointer'
-                                  }}
-                                  title="Código reservado para paleta pucho (Clic para copiar)"
-                                >
-                                  {puchoTag} (P)
-                                </code>
-                              )}
-                            </div>
-                          </td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
-
-            {/* Vista 2: Lista Detallada de Códigos y Paletas Separadas */}
-            {packingModalTab === 'tags' && (
-              <div className="table-wrap" style={{ maxHeight: '320px', overflowY: 'auto', marginBottom: '14px' }}>
-                <table>
-                  <thead>
-                    <tr>
-                      <th style={{ width: '40px', textAlign: 'center' }}>#</th>
-                      <th>Código / Tag RFID</th>
-                      <th>Tipo de paleta</th>
-                      <th>SKU</th>
-                      <th>Producto</th>
-                      <th style={{ textAlign: 'right' }}>Cajas</th>
-                      <th style={{ textAlign: 'right' }}>Unidades</th>
-                      <th style={{ textAlign: 'center', width: '90px' }}>Acción</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {allIndividualPallets.map((item) => (
-                      <tr key={item.uid_tag + '-' + item.correlativo}>
-                        <td style={{ textAlign: 'center', color: 'var(--color-text-secondary)', fontSize: '12px' }}>
-                          {item.correlativo}
-                        </td>
-                        <td>
-                          <code
-                            style={{
-                              fontSize: '12px',
-                              fontWeight: 700,
-                              color: item.tipo === 'PUCHO' ? 'var(--color-warning)' : item.tipo === 'RESERVA_EXCEDENTE' ? 'var(--color-text-secondary)' : 'var(--color-brand)',
-                              background: item.tipo === 'PUCHO' ? '#FFF8EE' : item.tipo === 'RESERVA_EXCEDENTE' ? 'var(--color-canvas)' : 'var(--color-brand-soft)',
-                              padding: '2px 6px',
-                              borderRadius: '4px',
-                              border: item.tipo === 'RESERVA_EXCEDENTE' ? '1px dashed var(--color-border)' : '1px solid transparent'
-                            }}
-                          >
-                            {item.uid_tag}
-                          </code>
-                        </td>
-                        <td>
-                          {item.tipo === 'COMPLETO' && (
-                            <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--color-brand-deep)' }}>
-                              Paleta estándar completa
-                            </span>
-                          )}
-                          {item.tipo === 'PUCHO' && (
-                            <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--color-warning)' }}>
-                              Pucho (Cajas sueltas)
-                            </span>
-                          )}
-                          {item.tipo === 'RESERVA_EXCEDENTE' && (
-                            <span style={{ fontSize: '12px', fontWeight: 500, color: 'var(--color-text-secondary)' }}>
-                              Reserva muelle (Excedente)
-                            </span>
-                          )}
-                        </td>
-                        <td>
-                          <code style={{ fontSize: '11px', color: 'var(--color-brand-deep)' }}>{item.sku}</code>
-                        </td>
-                        <td>
-                          <span style={{ fontSize: '13px', fontWeight: 500, color: 'var(--color-text-primary)' }}>
-                            {item.nombre}
-                          </span>
-                        </td>
-                        <td style={{ textAlign: 'right', fontWeight: 600 }}>
-                          {item.cajas > 0 ? item.cajas.toLocaleString('es-PE') : '—'}
-                        </td>
-                        <td style={{ textAlign: 'right', fontWeight: 600 }}>
-                          {item.unidades > 0 ? item.unidades.toLocaleString('es-PE') : '—'}
-                        </td>
-                        <td style={{ textAlign: 'center' }}>
-                          <button
-                            type="button"
-                            className="button secondary button-sm"
-                            style={{ padding: '2px 8px', fontSize: '11px' }}
-                            onClick={() => handleCopyTag(item.uid_tag)}
-                          >
-                            {copiedTag === item.uid_tag ? '✓ Copiado' : 'Copiar'}
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-
-            {/* Banner de Códigos de Contingencia para Excedentes */}
-            <div
-              style={{
-                backgroundColor: 'var(--color-canvas)',
-                border: '1px solid var(--color-border)',
-                borderRadius: '6px',
-                padding: '12px 16px',
-                marginBottom: '16px',
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                flexWrap: 'wrap',
-                gap: '10px'
-              }}
-            >
-              <div>
-                <strong style={{ fontSize: '13px', color: 'var(--color-brand-deep)' }}>
-                  Etiquetas de contingencia / reserva para excedentes:
-                </strong>
-                <p className="muted" style={{ margin: '2px 0 0 0', fontSize: '12px' }}>
-                  Si el contenedor trae paletas o cajas adicionales no contempladas, utiliza estos códigos pre-impresos para registrar el excedente sin detener la descarga.
-                </p>
-              </div>
-              <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-                {packingPlanModal.etiquetas_reserva.map((r) => (
-                  <code
-                    key={r.uid_tag}
-                    style={{
-                      background: 'var(--color-surface)',
-                      border: '1px dashed var(--color-border)',
-                      padding: '2px 6px',
-                      borderRadius: '4px',
-                      fontSize: '11px',
-                      fontWeight: 600,
-                      color: 'var(--color-brand)'
-                    }}
-                  >
-                    {r.uid_tag}
-                  </code>
-                ))}
-              </div>
-            </div>
-
-            {/* Acciones del Modal */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
-              <span className="muted" style={{ fontSize: '12px' }}>
-                El archivo descargable contiene 2 hojas: Resumen técnico y Rótulos con casillas de verificación para el operario.
-              </span>
-              <div style={{ display: 'flex', gap: '10px' }}>
-                <button
-                  type="button"
-                  className="button secondary"
-                  onClick={() => setPackingPlanModal(null)}
-                >
-                  Cerrar
-                </button>
-                <button
-                  type="button"
-                  className="button primary"
-                  onClick={() => packingListService.exportPackingListToExcel(packingPlanModal)}
-                >
-                  Descargar Excel para muelle (.xlsx)
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   )
 }
