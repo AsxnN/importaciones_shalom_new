@@ -7,62 +7,60 @@ import {
 } from '../services/receptionService'
 import { containerService } from '../services/containerService'
 import { packingListService, type OrderPackingPlan } from '../services/packingListService'
+import { orderReceptionService } from '../services/orderReceptionService'
 import type { ContainerRecord } from '../types/containers'
-import type {
-  ConciliationResult,
-  ImportOrder,
-  ReceptionReadingItem,
-  ReceptionReadingLog,
-  ReceptionSession
-} from '../types/receptions'
+import type { ImportOrder, OrderReceptionState } from '../types/receptions'
+
+// Subcomponentes del nuevo flujo modular
+import { WarehouseSearchSelector } from './receptions/WarehouseSearchSelector'
+import { OrderReceptionView } from './receptions/OrderReceptionView'
+import { ProductReceptionView } from './receptions/ProductReceptionView'
+import { ReceptionLiquidationView } from './receptions/ReceptionLiquidationView'
 
 interface Props {
-  onBack: () => void
+  onBack?: () => void
   onNavigateToInventory?: () => void
   initialContainerId?: number | null
 }
 
-export function ReceptionsPage({ onBack, onNavigateToInventory, initialContainerId }: Props) {
+export function ReceptionsPage({ onBack: _onBack, onNavigateToInventory: _onNavigateToInventory, initialContainerId }: Props) {
   // 1. Almacenes y estado global
   const [warehouses, setWarehouses] = useState<WarehouseOption[]>([])
   const [selectedWarehouseId, setSelectedWarehouseId] = useState<number | null>(null)
-  const [activeTab, setActiveTab] = useState<'operar' | 'historial' | 'ordenes'>('operar')
+
+  // 2. Modo de Navegación del Módulo
+  // 'orders_list': Lista principal de órdenes
+  // 'order_reception': Vista de la orden seleccionada con compuerta de contenedor
+  // 'product_reception': Vista de recepción individual de un producto
+  // 'liquidation': Vista de liquidación y liberación de códigos
+  const [viewMode, setViewMode] = useState<'orders_list' | 'order_reception' | 'product_reception' | 'liquidation'>('orders_list')
 
   const [loading, setLoading] = useState(true)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const [successMsg, setSuccessMsg] = useState<string | null>(null)
 
-  // 2. Datos maestros para recepción
+  // 3. Datos maestros
   const [orders, setOrders] = useState<ImportOrder[]>([])
   const [products, setProducts] = useState<ProductOption[]>([])
   const [suppliers, setSuppliers] = useState<SupplierOption[]>([])
-  const [history, setHistory] = useState<ReceptionSession[]>([])
   const [activeContainers, setActiveContainers] = useState<ContainerRecord[]>([])
-  const [selectedContainerId, setSelectedContainerId] = useState<string>(initialContainerId ? String(initialContainerId) : '')
 
-  // 3. Estado de la Sesión de Recepción Activa
+  // 4. Selección activa
   const [selectedOrderId, setSelectedOrderId] = useState<string>('')
-  const [selectedProductId, setSelectedProductId] = useState<string>('')
-  const [sessionActive, setSessionActive] = useState(false)
-  const [scannedItems, setScannedItems] = useState<ReceptionReadingItem[]>([])
+  const [selectedProductId, setSelectedProductId] = useState<number | null>(null)
+  const [activePackingPlan, setActivePackingPlan] = useState<OrderPackingPlan | null>(null)
+  const [receptionState, setReceptionState] = useState<OrderReceptionState>({
+    contenedor_confirmado: false,
+    paletas_recibidas: [],
+    codigos_liberados: [],
+    estado_recepcion: 'PENDIENTE'
+  })
 
-  // 4. Formulario de escaneo de lectura individual
-  const [scanUid, setScanUid] = useState('')
-  const [scanNumeroSerie, setScanNumeroSerie] = useState('')
-  const [scanType, setScanType] = useState<'COMPLETO' | 'PUCHO'>('COMPLETO')
-  const [puchoBoxes, setPuchoBoxes] = useState<number>(1)
-  const [scanError, setScanError] = useState<string | null>(null)
+  // 5. Filtro y búsqueda en lista de órdenes
+  const [orderFilter, setOrderFilter] = useState<'ALL' | 'PENDING' | 'RECEIVED'>('ALL')
+  const [searchOrderTerm, setSearchOrderTerm] = useState('')
 
-  // 5. Estado de Conciliación
-  const [isSubmitting, setIsSubmitting] = useState(false)
-  const [conciliationResult, setConciliationResult] = useState<ConciliationResult | null>(null)
-
-  // 6. Modal de Auditoría de Lecturas de una Sesión Histórica
-  const [inspectSession, setInspectSession] = useState<ReceptionSession | null>(null)
-  const [sessionReadings, setSessionReadings] = useState<ReceptionReadingLog[]>([])
-  const [loadingReadings, setLoadingReadings] = useState(false)
-
-  // 7. Modal de Nueva Orden Rápida de Importación
+  // 6. Modal de Nueva Orden Rápida de Importación
   const [showOrderModal, setShowOrderModal] = useState(false)
   const [newOrderNumber, setNewOrderNumber] = useState('')
   const [newOrderSupplierId, setNewOrderSupplierId] = useState<string>('')
@@ -72,121 +70,51 @@ export function ReceptionsPage({ onBack, onNavigateToInventory, initialContainer
   const [tempAddQty, setTempAddQty] = useState<number>(100)
   const [creatingOrder, setCreatingOrder] = useState(false)
 
-  // Filtro para el historial
-  const [historyFilter, setHistoryFilter] = useState<'ALL' | 'COMPLETA' | 'FALTANTES' | 'SOBRANTES'>('ALL')
-
-  // Filtro para el selector de órdenes: 'ALL' muestra todas, 'PENDING' solo en tránsito/borrador
-  const [orderFilter, setOrderFilter] = useState<'ALL' | 'PENDING'>('ALL')
-  const [loadingOrders, setLoadingOrders] = useState(false)
-
-  const handleFilterOrders = async (newFilter: 'ALL' | 'PENDING') => {
-    setOrderFilter(newFilter)
-    setLoadingOrders(true)
-    try {
-      const ordList = await receptionService.getImportOrders(newFilter)
-      setOrders(ordList)
-    } catch (err: any) {
-      setErrorMsg(`Error al filtrar órdenes: ${err.message}`)
-    } finally {
-      setLoadingOrders(false)
-    }
-  }
-
-  // Modal y visualizador de Packing List de la orden
+  // 7. Modal y visualizador de Packing List
   const [orderPackingModal, setOrderPackingModal] = useState<OrderPackingPlan | null>(null)
-  const [orderPackingTab, setOrderPackingTab] = useState<'summary' | 'tags'>('summary')
-  const [copiedPackingTag, setCopiedPackingTag] = useState<string | null>(null)
   const [loadingPackingModal, setLoadingPackingModal] = useState(false)
 
-  const handleCopyPackingTag = (tag: string) => {
-    navigator.clipboard.writeText(tag)
-    setCopiedPackingTag(tag)
-    setTimeout(() => setCopiedPackingTag(null), 2000)
-  }
+  // Almacén activo
+  const selectedWarehouse = useMemo(() => {
+    return warehouses.find((w) => w.id_almacen === selectedWarehouseId) || warehouses[0] || null
+  }, [warehouses, selectedWarehouseId])
 
-  const allOrderIndividualPallets = useMemo(() => {
-    if (!orderPackingModal) return []
-    const list: Array<{
-      correlativo: number
-      uid_tag: string
-      sku: string
-      nombre: string
-      tipo: 'COMPLETO' | 'PUCHO' | 'RESERVA_EXCEDENTE'
-      cajas: number
-      unidades: number
-    }> = []
+  // Orden activa
+  const selectedOrder = useMemo(() => {
+    if (!selectedOrderId) return null
+    return orders.find((o) => String(o.id_orden) === selectedOrderId) || null
+  }, [orders, selectedOrderId])
 
-    let idx = 1
-    for (const prod of orderPackingModal.productos) {
-      for (const pal of prod.paletas) {
-        list.push({
-          correlativo: idx++,
-          uid_tag: pal.uid_tag,
-          sku: prod.sku,
-          nombre: prod.nombre,
-          tipo: pal.tipo,
-          cajas: pal.cajas,
-          unidades: pal.unidades
-        })
-      }
-    }
+  // Detalle de producto activo en la orden
+  const selectedOrderDetail = useMemo(() => {
+    if (!selectedOrder || !selectedProductId) return null
+    return selectedOrder.detalles?.find((d) => d.id_producto === selectedProductId) || null
+  }, [selectedOrder, selectedProductId])
 
-    for (const res of orderPackingModal.etiquetas_reserva) {
-      list.push({
-        correlativo: idx++,
-        uid_tag: res.uid_tag,
-        sku: 'RESERVA',
-        nombre: 'Tag de contingencia para excedentes en muelle',
-        tipo: 'RESERVA_EXCEDENTE',
-        cajas: 0,
-        unidades: 0
-      })
-    }
-
-    return list
-  }, [orderPackingModal])
-
-  const handleOpenOrderPacking = async (order: ImportOrder) => {
-    setLoadingPackingModal(true)
-    try {
-      const plan = await packingListService.generateOrderPackingPlan(
-        order,
-        selectedWarehouse?.prefijo_rfid || 'IMP'
-      )
-      setOrderPackingModal(plan)
-    } catch (err: any) {
-      setErrorMsg(`Error al generar el plan de paletizado: ${err.message}`)
-    } finally {
-      setLoadingPackingModal(false)
-    }
-  }
-
-  // Carga inicial de datos
+  // Carga inicial
   const loadInitialData = async () => {
     setLoading(true)
     setErrorMsg(null)
     try {
-      const [whList, ordList, prodList, supList] = await Promise.all([
+      const [whList, ordList, prodList, supList, contList] = await Promise.all([
         receptionService.getWarehouses(),
         receptionService.getImportOrders('ALL'),
         receptionService.getActiveProducts(),
-        receptionService.getSuppliers()
+        receptionService.getSuppliers(),
+        containerService.getActiveContainersInYard()
       ])
 
       setWarehouses(whList)
       setOrders(ordList)
       setProducts(prodList)
       setSuppliers(supList)
+      setActiveContainers(contList)
 
       if (whList.length > 0 && selectedWarehouseId === null) {
         setSelectedWarehouseId(whList[0].id_almacen)
       }
-
-      // Cargar historial
-      const hist = await receptionService.getReceptionHistory(whList[0]?.id_almacen)
-      setHistory(hist)
     } catch (err: any) {
-      setErrorMsg(`Error inicializando datos de recepción: ${err.message}`)
+      setErrorMsg(`Error cargando datos de recepción: ${err.message}`)
     } finally {
       setLoading(false)
     }
@@ -197,379 +125,167 @@ export function ReceptionsPage({ onBack, onNavigateToInventory, initialContainer
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Recargar historial al cambiar almacén
-  useEffect(() => {
-    if (selectedWarehouseId) {
-      void (async () => {
-        const hist = await receptionService.getReceptionHistory(selectedWarehouseId)
-        setHistory(hist)
-      })()
-    }
-  }, [selectedWarehouseId])
-
-  // Cargar contenedores activos en patio (sin hora de salida)
+  // Refrescar contenedores al cambiar de vista
   useEffect(() => {
     void containerService.getActiveContainersInYard().then(setActiveContainers)
-  }, [activeTab])
+  }, [viewMode])
 
-  useEffect(() => {
-    if (initialContainerId) {
-      setSelectedContainerId(String(initialContainerId))
-      setActiveTab('operar')
+  // Órdenes filtradas para la lista principal
+  const filteredOrders = useMemo(() => {
+    let list = orders
+    if (orderFilter === 'PENDING') {
+      list = list.filter((o) => o.estado === 'TRANSITO' || o.estado === 'BORRADOR')
+    } else if (orderFilter === 'RECEIVED') {
+      list = list.filter((o) => o.estado === 'RECIBIDA')
     }
-  }, [initialContainerId])
 
-  // Contenedor seleccionado
-  const selectedContainer = useMemo(() => {
-    if (!selectedContainerId || selectedContainerId === 'none') return null
-    return activeContainers.find((c) => String(c.id_contenedor) === selectedContainerId) || null
-  }, [activeContainers, selectedContainerId])
-
-  // Almacén actualmente seleccionado
-  const selectedWarehouse = useMemo(() => {
-    return warehouses.find((w) => w.id_almacen === selectedWarehouseId) || null
-  }, [warehouses, selectedWarehouseId])
-
-  // Orden seleccionada
-  const selectedOrder = useMemo(() => {
-    if (!selectedOrderId) return null
-    return orders.find((o) => o.id_orden === Number(selectedOrderId)) || null
-  }, [orders, selectedOrderId])
-
-  // Productos disponibles para la orden seleccionada (o todos si no hay orden seleccionada)
-  const availableOrderProducts = useMemo(() => {
-    if (!selectedOrder || !selectedOrder.detalles || selectedOrder.detalles.length === 0) {
-      return products
-    }
-    const orderProdIds = new Set(selectedOrder.detalles.map((d) => d.id_producto))
-    return products.filter((p) => orderProdIds.has(p.id_producto))
-  }, [selectedOrder, products])
-
-  // Producto seleccionado y su detalle en la orden
-  const selectedProduct = useMemo(() => {
-    if (!selectedProductId) return null
-    return products.find((p) => p.id_producto === Number(selectedProductId)) || null
-  }, [products, selectedProductId])
-
-  const selectedOrderDetail = useMemo(() => {
-    if (!selectedOrder || !selectedProduct) return null
-    return selectedOrder.detalles?.find((d) => d.id_producto === selectedProduct.id_producto) || null
-  }, [selectedOrder, selectedProduct])
-
-  // Progreso en vivo de cada producto de la orden seleccionada (avance de escaneo y faltantes)
-  const orderProductsProgress = useMemo(() => {
-    if (!selectedOrder || !selectedOrder.detalles) return []
-
-    return selectedOrder.detalles.map((det) => {
-      const prod = products.find((p) => p.id_producto === det.id_producto)
-      const cantPedida = Number(det.cantidad_pedida) || 0
-      const unidCaja = prod?.unidades_por_caja || 1
-      const cajasPal = prod?.cajas_por_paleta || 1
-      const unidPal = unidCaja * cajasPal
-      const paletasPactadas = Math.ceil(cantPedida / unidPal)
-
-      // Filtrar lecturas de la sesión activa para este producto
-      const prodItems = scannedItems.filter(
-        (it) => it.id_producto === det.id_producto || (!it.id_producto && Number(selectedProductId) === det.id_producto)
+    if (searchOrderTerm.trim()) {
+      const q = searchOrderTerm.toLowerCase().trim()
+      list = list.filter(
+        (o) =>
+          o.numero_orden.toLowerCase().includes(q) ||
+          (o.proveedor?.razon_social && o.proveedor.razon_social.toLowerCase().includes(q)) ||
+          (o.proveedor?.nombre && o.proveedor.nombre.toLowerCase().includes(q)) ||
+          (o.detalles && o.detalles.some((d) => d.producto?.sku.toLowerCase().includes(q) || d.producto?.nombre.toLowerCase().includes(q)))
       )
+    }
+    return list
+  }, [orders, orderFilter, searchOrderTerm])
 
-      let paletasLeidas = 0
-      let puchosLeidos = 0
-      if (prod?.modo_manejo === 'SERIALIZADO') {
-        paletasLeidas = prodItems.length
-      } else {
-        for (const item of prodItems) {
-          if (item.tipo === 'COMPLETO') {
-            paletasLeidas += 1
-          } else {
-            puchosLeidos += item.cantidad_paquetes
-          }
-        }
+  // Abrir recepción de una orden (Paso al Nivel 2)
+  const handleOpenOrderReception = async (ord: ImportOrder) => {
+    setErrorMsg(null)
+    setSelectedOrderId(String(ord.id_orden))
+    setSelectedProductId(null)
+
+    // Cargar o inicializar estado de recepción
+    const state = orderReceptionService.getOrderReceptionState(ord.id_orden, ord.snapshot_proyeccion)
+
+    // Si viene un initialContainerId desde MOD-07 y la orden no tenía contenedor confirmado, auto-asociarlo
+    if (initialContainerId && !state.contenedor_confirmado) {
+      const matched = activeContainers.find((c) => c.id_contenedor === initialContainerId)
+      if (matched) {
+        state.id_contenedor_seleccionado = matched.id_contenedor
+        state.numero_contenedor_seleccionado = matched.numero_contenedor
+        state.placa_camion_seleccionado = matched.placa_camion
       }
+    }
 
-      const unidadesLeidas =
-        prod?.modo_manejo === 'SERIALIZADO'
-          ? paletasLeidas
-          : (paletasLeidas * cajasPal + puchosLeidos) * unidCaja
+    setReceptionState(state)
 
-      const porcentaje = cantPedida > 0 ? Math.min(100, Math.round((unidadesLeidas / cantPedida) * 100)) : 0
-      const faltantes = Math.max(0, cantPedida - unidadesLeidas)
+    // Cargar plan de paletizado de la orden (códigos separados)
+    try {
+      const plan = await packingListService.generateOrderPackingPlan(
+        ord,
+        selectedWarehouse?.prefijo_rfid || 'IMP'
+      )
+      setActivePackingPlan(plan)
+    } catch (e: any) {
+      console.warn('Error loading packing plan:', e)
+    }
 
-      let estado: 'PENDIENTE' | 'EN_PROCESO' | 'COMPLETO' | 'SOBRANTE' = 'PENDIENTE'
-      if (unidadesLeidas > cantPedida) {
-        estado = 'SOBRANTE'
-      } else if (unidadesLeidas === cantPedida) {
-        estado = 'COMPLETO'
-      } else if (unidadesLeidas > 0) {
-        estado = 'EN_PROCESO'
-      }
+    setViewMode('order_reception')
+  }
 
-      return {
-        id_producto: det.id_producto,
-        sku: det.producto?.sku || prod?.sku || `SKU-${det.id_producto}`,
-        nombre: det.producto?.nombre || prod?.nombre || 'Producto',
-        modo_manejo: prod?.modo_manejo || 'PALETIZADO',
-        cantPedida,
-        paletasPactadas,
-        unidCaja,
-        cajasPal,
-        paletasLeidas,
-        puchosLeidos,
-        unidadesLeidas,
-        porcentaje,
-        faltantes,
-        estado
-      }
+  // Guardar contenedor seleccionado para la orden
+  const handleSaveContainer = (containerId: number, containerNumber: string, truckPlate: string) => {
+    if (!selectedOrder) return
+    const updated: OrderReceptionState = {
+      ...receptionState,
+      id_contenedor_seleccionado: containerId,
+      numero_contenedor_seleccionado: containerNumber,
+      placa_camion_seleccionado: truckPlate,
+      contenedor_confirmado: true
+    }
+    setReceptionState(updated)
+    orderReceptionService.saveOrderReceptionState(selectedOrder.id_orden, updated, selectedOrder.numero_orden)
+    setSuccessMsg(`Contenedor [${containerNumber}] vinculado y fijado para la orden ${selectedOrder.numero_orden}.`)
+  }
+
+  // Seleccionar un producto para recepcionar (Paso al Nivel 3)
+  const handleSelectProduct = (productId: number) => {
+    setSelectedProductId(productId)
+    setViewMode('product_reception')
+  }
+
+  // Confirmar y registrar físicamente una paleta
+  const handleConfirmPallet = async (payload: {
+    uid_tag: string
+    tipo: 'COMPLETO' | 'PUCHO'
+    cajas: number
+    unidades: number
+    codigo_barras?: string
+  }) => {
+    if (!selectedOrder || !selectedWarehouse || !selectedOrderDetail || !selectedOrderDetail.producto) {
+      throw new Error('Faltan datos de la orden o producto para registrar la paleta.')
+    }
+
+    const updatedState = await orderReceptionService.recordPalletReception({
+      id_orden: selectedOrder.id_orden,
+      numero_orden: selectedOrder.numero_orden,
+      id_almacen: selectedWarehouse.id_almacen,
+      id_producto: selectedOrderDetail.id_producto,
+      sku: selectedOrderDetail.producto.sku,
+      nombre: selectedOrderDetail.producto.nombre,
+      uid_tag: payload.uid_tag,
+      tipo: payload.tipo,
+      cajas: payload.cajas,
+      unidades: payload.unidades,
+      id_contenedor: receptionState.id_contenedor_seleccionado,
+      numero_contenedor: receptionState.numero_contenedor_seleccionado,
+      currentState: receptionState
     })
-  }, [selectedOrder, products, scannedItems, selectedProductId])
 
-  // Cálculos en tiempo real de la sesión activa
-  const sessionSummary = useMemo(() => {
-    if (!selectedProduct) return { totalTags: 0, paletasCompletas: 0, totalPuchos: 0, totalCajas: 0, totalUnidades: 0 }
-
-    if (selectedProduct.modo_manejo === 'SERIALIZADO') {
-      return {
-        totalTags: scannedItems.length,
-        paletasCompletas: 0,
-        totalPuchos: 0,
-        totalCajas: scannedItems.length,
-        totalUnidades: scannedItems.length
-      }
-    }
-
-    let paletas = 0
-    let puchos = 0
-
-    for (const item of scannedItems) {
-      if (item.tipo === 'COMPLETO') {
-        paletas += 1
-      } else {
-        puchos += item.cantidad_paquetes
-      }
-    }
-
-    const cajas = paletas * selectedProduct.cajas_por_paleta + puchos
-    const unidades = cajas * selectedProduct.unidades_por_caja
-
-    return {
-      totalTags: scannedItems.length,
-      paletasCompletas: paletas,
-      totalPuchos: puchos,
-      totalCajas: cajas,
-      totalUnidades: unidades
-    }
-  }, [scannedItems, selectedProduct])
-
-  // Sugerir siguiente UID conforme a norma (rellenando huecos de menor a mayor)
-  const handleSuggestUid = async () => {
-    if (!selectedWarehouseId) return
-    const prefix = selectedWarehouse?.prefijo_rfid || undefined
-    const currentUids = scannedItems.map((i) => i.uid)
-    const nextUid = await receptionService.suggestNextUid(selectedWarehouseId, prefix, currentUids)
-    setScanUid(nextUid)
-    setScanError(null)
+    setReceptionState(updatedState)
   }
 
-  // Iniciar Sesión de Recepción
-  const handleStartSession = () => {
-    if (!selectedOrderId) {
-      setErrorMsg('Debe seleccionar una orden de importación.')
-      return
-    }
-    if (!selectedProductId) {
-      setErrorMsg('Debe seleccionar el producto que ingresará en la recepción.')
-      return
-    }
-    if (!selectedWarehouseId) {
-      setErrorMsg('Debe seleccionar el almacén de destino.')
-      return
-    }
+  // Liquidación final de la orden
+  const handleConfirmLiquidation = async (
+    dictamen: 'COMPLETA' | 'FALTANTES' | 'SOBRANTES',
+    observaciones: string,
+    codigosALiberar: string[]
+  ) => {
+    if (!selectedOrder) return
 
-    setErrorMsg(null)
-    setSuccessMsg(null)
-    setConciliationResult(null)
-    setScannedItems([])
-    setSessionActive(true)
+    await orderReceptionService.liquidateOrderReception({
+      id_orden: selectedOrder.id_orden,
+      numero_orden: selectedOrder.numero_orden,
+      dictamen,
+      observaciones,
+      codigosALiberar,
+      id_contenedor: receptionState.id_contenedor_seleccionado,
+      packingPlan: activePackingPlan,
+      currentState: receptionState
+    })
 
-    // Sugerir el primer UID automáticamente
-    void handleSuggestUid()
+    setSuccessMsg(
+      `Recepción de la orden ${selectedOrder.numero_orden} liquidada con éxito (Dictamen: ${dictamen}). Se liberaron ${codigosALiberar.length} códigos correlativos para futuras órdenes.`
+    )
+
+    // Recargar órdenes
+    await loadInitialData()
+    setViewMode('orders_list')
+    setSelectedOrderId('')
+    setSelectedProductId(null)
   }
 
-  // Cancelar o reiniciar la sesión en curso
-  const handleResetSession = () => {
-    if (scannedItems.length > 0) {
-      if (!window.confirm('¿Desea descartar las lecturas escaneadas y reiniciar la sesión?')) {
-        return
-      }
-    }
-    setSessionActive(false)
-    setScannedItems([])
-    setConciliationResult(null)
-    setScanUid('')
-    setScanError(null)
-  }
-
-  // Registrar lectura de tag (escáner o ingreso manual)
-  const handleAddReading = async (e?: FormEvent) => {
-    if (e) e.preventDefault()
-    setScanError(null)
-
-    const cleanUid = scanUid.trim().toUpperCase()
-    if (!cleanUid) {
-      setScanError('Ingrese o escanee un identificador UID válido.')
-      return
-    }
-
-    if (!selectedProduct) {
-      setScanError('No hay un producto seleccionado.')
-      return
-    }
-
-    // Validar disponibilidad del tag
-    const currentUids = scannedItems.map((i) => i.uid)
-    const check = await receptionService.checkTagAvailability(cleanUid, currentUids, selectedProduct.id_producto)
-    if (!check.valid) {
-      setScanError(check.reason || 'El tag no es válido.')
-      return
-    }
-
-    if (selectedProduct.modo_manejo === 'SERIALIZADO') {
-      const cleanSerie = scanNumeroSerie.trim()
-      if (!cleanSerie) {
-        setScanError('Debe ingresar el número de serie de fábrica del equipo.')
-        return
-      }
-
-      if (scannedItems.some((i) => i.numero_serie === cleanSerie)) {
-        setScanError(`El número de serie [${cleanSerie}] ya fue escaneado en esta sesión.`)
-        return
-      }
-
-      const item: ReceptionReadingItem = {
-        uid: cleanUid,
-        tipo: 'COMPLETO',
-        cantidad_paquetes: 1,
-        numero_serie: cleanSerie,
-        id_producto: selectedProduct.id_producto
-      }
-
-      const updatedItems = [item, ...scannedItems]
-      setScannedItems(updatedItems)
-      setScanUid('')
-      setScanNumeroSerie('')
-
-      if (selectedWarehouseId) {
-        const prefix = selectedWarehouse?.prefijo_rfid || undefined
-        const allUids = updatedItems.map((i) => i.uid)
-        const nextUid = await receptionService.suggestNextUid(selectedWarehouseId, prefix, allUids)
-        setScanUid(nextUid)
-      }
-      return
-    }
-
-    const item: ReceptionReadingItem = {
-      uid: cleanUid,
-      tipo: scanType,
-      cantidad_paquetes: scanType === 'COMPLETO' ? selectedProduct.cajas_por_paleta : Math.max(1, puchoBoxes),
-      id_producto: selectedProduct.id_producto
-    }
-
-    const updatedItems = [item, ...scannedItems]
-    setScannedItems(updatedItems)
-    setScanUid('')
-    setPuchoBoxes(1)
-    setScanType('COMPLETO')
-
-    // Sugerir automáticamente el siguiente correlativo libre excluyendo los ya escaneados
-    if (selectedWarehouseId) {
-      const prefix = selectedWarehouse?.prefijo_rfid || undefined
-      const allUids = updatedItems.map((i) => i.uid)
-      const nextUid = await receptionService.suggestNextUid(selectedWarehouseId, prefix, allUids)
-      setScanUid(nextUid)
-    }
-  }
-
-  // Quitar una lectura de la lista antes de conciliar
-  const handleRemoveReading = (uid: string) => {
-    setScannedItems((prev) => prev.filter((item) => item.uid !== uid))
-  }
-
-  // Finalizar recepción y conciliar ciegamente
-  const handleFinishAndConciliate = async () => {
-    if (scannedItems.length === 0) {
-      setErrorMsg('Debe registrar al menos una paleta o pucho para conciliar.')
-      return
-    }
-    if (!selectedOrderId || !selectedProductId || !selectedWarehouseId) {
-      setErrorMsg('Datos de sesión incompletos.')
-      return
-    }
-
-    setIsSubmitting(true)
-    setErrorMsg(null)
+  // Modal de Packing List
+  const handleOpenOrderPacking = async (ord: ImportOrder) => {
+    setLoadingPackingModal(true)
     try {
-      const result = await receptionService.submitConciliation({
-        id_orden: Number(selectedOrderId),
-        id_producto: Number(selectedProductId),
-        id_almacen: selectedWarehouseId,
-        lecturas: scannedItems,
-        offlineTransactionId: `WEB-REC-${Date.now()}`
-      })
-
-      setConciliationResult(result)
-      setSessionActive(false)
-
-      if (selectedContainerId && selectedContainerId !== 'none') {
-        void containerService.updateContainer(Number(selectedContainerId), { estado: 'EN_DESCARGA' })
-      }
-
-      setSelectedOrderId('')
-      setSelectedProductId('')
-      setScannedItems([])
-      setSuccessMsg('Recepción conciliada exitosamente. El inventario físico y Kardex fueron actualizados.')
-
-      // Recargar órdenes e historial
-      const [hist, ordList] = await Promise.all([
-        receptionService.getReceptionHistory(selectedWarehouseId),
-        receptionService.getImportOrders(orderFilter)
-      ])
-      setHistory(hist)
-      setOrders(ordList)
+      const plan = await packingListService.generateOrderPackingPlan(
+        ord,
+        selectedWarehouse?.prefijo_rfid || 'IMP'
+      )
+      setOrderPackingModal(plan)
     } catch (err: any) {
-      setErrorMsg(`Error al conciliar recepción: ${err.message}`)
+      setErrorMsg(`Error al generar el plan de paletizado: ${err.message}`)
     } finally {
-      setIsSubmitting(false)
+      setLoadingPackingModal(false)
     }
   }
 
-  // Abrir modal de inspección de lecturas de una sesión histórica
-  const handleOpenInspectSession = async (session: ReceptionSession) => {
-    setInspectSession(session)
-    setLoadingReadings(true)
-    try {
-      const readings = await receptionService.getReceptionReadings(session.id_sesion)
-      setSessionReadings(readings)
-    } catch {
-      setSessionReadings([])
-    } finally {
-      setLoadingReadings(false)
-    }
-  }
-
-  // Agregar item temporal a la nueva orden
-  const handleAddOrderItem = () => {
-    if (!tempAddProdId) return
-    const prodId = Number(tempAddProdId)
-    if (newOrderItems.some((i) => i.id_producto === prodId)) {
-      alert('Este producto ya fue agregado a la orden.')
-      return
-    }
-    setNewOrderItems((prev) => [...prev, { id_producto: prodId, cantidad_pedida: tempAddQty }])
-    setTempAddProdId('')
-    setTempAddQty(100)
-  }
-
-  // Crear nueva orden de importación
+  // Crear orden rápida
   const handleCreateOrder = async (e: FormEvent) => {
     e.preventDefault()
     if (!newOrderNumber.trim()) {
@@ -595,1402 +311,176 @@ export function ReceptionsPage({ onBack, onNavigateToInventory, initialContainer
         return
       }
 
-      // Recargar órdenes
-      const updatedOrders = await receptionService.getImportOrders(orderFilter)
+      const updatedOrders = await receptionService.getImportOrders('ALL')
       setOrders(updatedOrders)
       setShowOrderModal(false)
       setNewOrderNumber('')
       setNewOrderItems([])
 
-      if (res.id_orden) {
-        setSelectedOrderId(String(res.id_orden))
-      }
-      setSuccessMsg(`Orden ${newOrderNumber} creada y lista para recibir mercancía.`)
+      setSuccessMsg(`Orden ${newOrderNumber} creada y lista para recibir mercancía en muelle.`)
     } catch (err: any) {
-      alert(err.message || 'Error inesperado.')
+      alert(err.message || 'Error al crear orden.')
     } finally {
       setCreatingOrder(false)
     }
   }
 
-  // Historial filtrado
-  const filteredHistory = useMemo(() => {
-    if (historyFilter === 'ALL') return history
-    return history.filter((s) => s.conciliacion?.estado === historyFilter)
-  }, [history, historyFilter])
-
-  if (loading) {
-    return <main className="screen-message">Cargando infraestructura de recepciones y almacenes…</main>
-  }
-
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', paddingBottom: '32px' }}>
-      {/* 1. Encabezado de la página (skill_design.md) */}
-      <div className="page-heading">
-        <div>
-          <button
-            type="button"
-            className="link-back"
-            onClick={onBack}
-            style={{ marginBottom: '6px' }}
-          >
-            Volver al resumen
-          </button>
-          <h1 className="page-title" style={{ margin: 0 }}>Recepciones RFID</h1>
-          <p className="page-lead" style={{ margin: '4px 0 0 0' }}>
-            Recepción táctica de mercancía, enrolamiento de tags RFID/NFC y conciliación ciega contra órdenes de importación.
-          </p>
-        </div>
-
-        {selectedWarehouse && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-            <span
-              style={{
-                fontSize: '13px',
-                fontWeight: 600,
-                color: 'var(--color-brand)',
-                background: 'var(--color-brand-soft)',
-                padding: '6px 14px',
-                borderRadius: '6px',
-                border: '1px solid var(--color-border)'
-              }}
-            >
-              Destino: {selectedWarehouse.nombre} [{selectedWarehouse.prefijo_rfid || 'TAG'}]
-            </span>
-          </div>
-        )}
-      </div>
-
-      {/* Notificaciones y Alertas */}
+    <div className="workspace" style={{ padding: '24px 32px' }}>
+      {/* Mensajes de Alerta y Éxito */}
       {errorMsg && (
         <div
           style={{
-            background: '#FDF2F0',
-            color: 'var(--color-danger)',
-            border: '1px solid rgba(179, 64, 42, 0.3)',
-            borderRadius: '6px',
             padding: '12px 16px',
-            fontSize: '14px',
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center'
+            borderRadius: '6px',
+            background: '#FDF2F0',
+            border: '1px solid var(--color-danger)',
+            color: 'var(--color-danger)',
+            fontSize: '13px',
+            marginBottom: '16px'
           }}
-          role="alert"
         >
-          <span>{errorMsg}</span>
-          <button
-            type="button"
-            onClick={() => setErrorMsg(null)}
-            style={{ background: 'none', border: 'none', cursor: 'pointer', fontWeight: 600, color: 'var(--color-danger)' }}
-          >
-            ✕
-          </button>
+          {errorMsg}
         </div>
       )}
 
       {successMsg && (
         <div
           style={{
-            background: 'var(--color-brand-soft)',
-            color: 'var(--color-brand-deep)',
-            border: '1px solid var(--color-brand)',
-            borderRadius: '6px',
             padding: '12px 16px',
-            fontSize: '14px',
+            borderRadius: '6px',
+            background: '#EAF5ED',
+            border: '1px solid var(--color-success)',
+            color: 'var(--color-success)',
+            fontSize: '13px',
+            marginBottom: '16px',
             display: 'flex',
             justifyContent: 'space-between',
             alignItems: 'center'
           }}
-          role="status"
         >
-          <span>{successMsg}</span>
+          <span>✓ {successMsg}</span>
           <button
             type="button"
             onClick={() => setSuccessMsg(null)}
-            style={{ background: 'none', border: 'none', cursor: 'pointer', fontWeight: 600, color: 'var(--color-brand-deep)' }}
+            style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-success)', fontWeight: 700 }}
           >
             ✕
           </button>
         </div>
       )}
 
-      {/* 2. Selector de Almacén de Destino (Botones de Sede Limpios) */}
-      <section aria-label="Selección de almacén de destino">
-        <label
-          style={{
-            display: 'block',
-            fontSize: '13px',
-            fontWeight: 600,
-            color: 'var(--color-text-secondary)',
-            marginBottom: '8px'
-          }}
-        >
-          Almacén operativo de destino:
-        </label>
-
-        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-          {warehouses.map((wh) => {
-            const isSelected = wh.id_almacen === selectedWarehouseId
-            return (
-              <button
-                key={wh.id_almacen}
-                type="button"
-                onClick={() => {
-                  if (sessionActive && wh.id_almacen !== selectedWarehouseId) {
-                    if (!window.confirm('Hay una sesión de escaneo en curso. ¿Desea cambiar de almacén y reiniciar la sesión?')) {
-                      return
-                    }
-                    setSessionActive(false)
-                    setScannedItems([])
-                  }
-                  setSelectedWarehouseId(wh.id_almacen)
-                }}
-                style={{
-                  padding: '10px 16px',
-                  borderRadius: '6px',
-                  fontSize: '14px',
-                  fontWeight: isSelected ? 600 : 500,
-                  cursor: 'pointer',
-                  border: isSelected ? '2px solid var(--color-brand)' : '1px solid var(--color-border)',
-                  background: isSelected ? 'var(--color-brand-soft)' : 'var(--color-surface)',
-                  color: isSelected ? 'var(--color-brand-deep)' : 'var(--color-text-primary)',
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '8px',
-                  transition: 'all 0.15s ease'
-                }}
-              >
-                <span>{wh.nombre}</span>
-                <span
-                  style={{
-                    fontSize: '12px',
-                    fontWeight: 600,
-                    color: isSelected ? 'var(--color-brand)' : 'var(--color-text-secondary)'
-                  }}
-                >
-                  [{wh.prefijo_rfid || 'TAG'}]
-                </span>
-              </button>
-            )
-          })}
-        </div>
-      </section>
-
-      {/* 3. Pestañas Oficiales de Navegación (.module-tabs de skill_design.md) */}
-      <nav className="module-tabs" aria-label="Pestañas de recepción">
-        <button
-          type="button"
-          className={activeTab === 'operar' ? 'active' : ''}
-          onClick={() => setActiveTab('operar')}
-        >
-          Nueva recepción táctica
-        </button>
-
-        <button
-          type="button"
-          className={activeTab === 'historial' ? 'active' : ''}
-          onClick={() => setActiveTab('historial')}
-        >
-          Historial y conciliación ({history.length})
-        </button>
-
-        <button
-          type="button"
-          className={activeTab === 'ordenes' ? 'active' : ''}
-          onClick={() => setActiveTab('ordenes')}
-        >
-          Órdenes de importación ({orders.length})
-        </button>
-      </nav>
-
-      {/* 4. CONTENIDO: Pestaña 1 - Nueva Recepción Táctica */}
-      {activeTab === 'operar' && (
+      {/* VISTA 1: Lista Principal de Órdenes de Importación */}
+      {viewMode === 'orders_list' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-          {/* Banner de resultado de conciliación previa si se acaba de finalizar */}
-          {conciliationResult && (
-            <div
-              className="panel"
-              style={{
-                borderLeft: `4px solid ${
-                  conciliationResult.estado_conciliacion === 'COMPLETA' ? 'var(--color-success)' : 'var(--color-warning)'
-                }`,
-                backgroundColor:
-                  conciliationResult.estado_conciliacion === 'COMPLETA' ? '#F2FAF4' : '#FDFBF7'
-              }}
-            >
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '12px' }}>
-                <div>
-                  <h3 style={{ margin: '0 0 6px 0', fontSize: '18px', color: 'var(--color-text-primary)' }}>
-                    Resultado de conciliación ciega:{' '}
-                    <span
-                      style={{
-                        color:
-                          conciliationResult.estado_conciliacion === 'COMPLETA'
-                            ? 'var(--color-success)'
-                            : 'var(--color-warning)'
-                      }}
-                    >
-                      {conciliationResult.estado_conciliacion}
-                    </span>
-                  </h3>
-                  <p className="muted" style={{ margin: 0, fontSize: '13px' }}>
-                    Sesión #{conciliationResult.id_sesion} procesada e ingresada en el almacén{' '}
-                    <strong>{selectedWarehouse?.nombre}</strong>. Las paletas se encuentran en Zona Campo listas para ser ubicadas en racks.
-                  </p>
-                </div>
-                <div style={{ display: 'flex', gap: '10px' }}>
-                  {onNavigateToInventory && (
-                    <button type="button" className="button secondary button-sm" onClick={onNavigateToInventory}>
-                      Ver paletas en inventario
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    className="button primary button-sm"
-                    onClick={() => {
-                      setConciliationResult(null)
-                      setScannedItems([])
-                      setSelectedOrderId('')
-                      setSelectedProductId('')
-                    }}
-                  >
-                    Nueva recepción
-                  </button>
-                </div>
-              </div>
-
-              {/* Tira de Métricas del Cruce Ciego */}
-              <div className="indicator-strip" style={{ marginTop: '16px' }}>
-                <div className="indicator-card">
-                  <span className="indicator-label">Unidades esperadas</span>
-                  <span className="indicator-value">{conciliationResult.cantidad_esperada}</span>
-                  <span className="indicator-context">Según orden de compra</span>
-                </div>
-                <div className="indicator-card">
-                  <span className="indicator-label">Unidades recibidas</span>
-                  <span className="indicator-value">{conciliationResult.cantidad_recibida}</span>
-                  <span className="indicator-context">Físico escaneado</span>
-                </div>
-                <div className="indicator-card">
-                  <span className="indicator-label">Diferencia neta</span>
-                  <span
-                    className="indicator-value"
-                    style={{
-                      color:
-                        conciliationResult.diferencia_unidades === 0
-                          ? 'var(--color-success)'
-                          : conciliationResult.diferencia_unidades < 0
-                          ? 'var(--color-danger)'
-                          : 'var(--color-brand)'
-                    }}
-                  >
-                    {conciliationResult.diferencia_unidades > 0
-                      ? `+${conciliationResult.diferencia_unidades}`
-                      : conciliationResult.diferencia_unidades}
-                  </span>
-                  <span className="indicator-context">
-                    {conciliationResult.diferencia_unidades === 0
-                      ? 'Sin discrepancias'
-                      : conciliationResult.diferencia_unidades < 0
-                      ? 'Faltantes en muelle'
-                      : 'Excedente recibido'}
-                  </span>
-                </div>
-                <div className="indicator-card">
-                  <span className="indicator-label">Bultos / Tags</span>
-                  <span className="indicator-value">{conciliationResult.tags_procesados}</span>
-                  <span className="indicator-context">
-                    {conciliationResult.paletas_completas} completas, {conciliationResult.paquetes_puchos} puchos
-                  </span>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Paso 1: Configurar Recepción (Solo si no está en escaneo activo) */}
-          {!sessionActive && !conciliationResult && (
-            <div className="panel" style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
-                <div>
-                  <h2 className="section-title" style={{ margin: 0, fontSize: '18px', color: 'var(--color-brand-deep)' }}>
-                    Paso 1: Configurar recepción y mercancía
-                  </h2>
-                  <p className="muted" style={{ margin: '4px 0 0 0', fontSize: '13px' }}>
-                    Seleccione la orden de importación y el producto que ingresará al almacén{' '}
-                    <strong>{selectedWarehouse?.nombre}</strong>.
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  className="button secondary button-sm"
-                  onClick={() => setShowOrderModal(true)}
-                >
-                  Nueva orden de importación
-                </button>
-              </div>
-
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '16px' }}>
-                {/* Selector de Orden con Filtro */}
-                <div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px', flexWrap: 'wrap', gap: '8px' }}>
-                    <label
-                      htmlFor="select-order"
-                      style={{ fontSize: '13px', fontWeight: 600, color: 'var(--color-text-secondary)', margin: 0 }}
-                    >
-                      Orden de importación *
-                    </label>
-                    <div style={{ display: 'flex', gap: '4px' }}>
-                      <button
-                        type="button"
-                        className={`button button-sm ${orderFilter === 'ALL' ? 'primary' : 'secondary'}`}
-                        style={{ padding: '3px 8px', fontSize: '12px' }}
-                        onClick={() => void handleFilterOrders('ALL')}
-                        disabled={loadingOrders}
-                      >
-                        Todas las órdenes
-                      </button>
-                      <button
-                        type="button"
-                        className={`button button-sm ${orderFilter === 'PENDING' ? 'primary' : 'secondary'}`}
-                        style={{ padding: '3px 8px', fontSize: '12px' }}
-                        onClick={() => void handleFilterOrders('PENDING')}
-                        disabled={loadingOrders}
-                      >
-                        Solo en tránsito
-                      </button>
-                    </div>
-                  </div>
-
-                  <select
-                    id="select-order"
-                    value={selectedOrderId}
-                    onChange={(e) => {
-                      setSelectedOrderId(e.target.value)
-                      setSelectedProductId('')
-                    }}
-                    style={{
-                      width: '100%',
-                      padding: '10px 12px',
-                      border: '1px solid var(--color-border)',
-                      borderRadius: '6px',
-                      background: 'var(--color-surface)',
-                      color: 'var(--color-text-primary)',
-                      fontFamily: 'var(--font-body)',
-                      fontSize: '14px'
-                    }}
-                  >
-                    <option value="">
-                      {loadingOrders
-                        ? '-- Cargando órdenes… --'
-                        : orders.length === 0
-                        ? '-- No hay órdenes registradas --'
-                        : `-- Seleccione una orden (${orders.length} disponibles) --`}
-                    </option>
-                    {orders.map((ord) => (
-                      <option key={ord.id_orden} value={ord.id_orden}>
-                        {ord.numero_orden} — {ord.proveedor?.razon_social || ord.proveedor?.nombre || 'Proveedor genérico'} [{ord.estado}] ({ord.tipo_contenedor || '40FT'})
-                      </option>
-                    ))}
-                  </select>
-
-                  {orders.length === 0 && !loadingOrders && (
-                    <div
-                      style={{
-                        marginTop: '8px',
-                        padding: '10px 12px',
-                        backgroundColor: 'var(--color-brand-soft)',
-                        borderRadius: '6px',
-                        border: '1px solid var(--color-border)',
-                        fontSize: '13px',
-                        color: 'var(--color-brand-deep)'
-                      }}
-                    >
-                      <span>No hay órdenes de importación {orderFilter === 'PENDING' ? 'en tránsito' : 'registradas en el sistema'}. </span>
-                      {orderFilter === 'PENDING' ? (
-                        <button
-                          type="button"
-                          className="link-button"
-                          onClick={() => void handleFilterOrders('ALL')}
-                          style={{ fontWeight: 600, textDecoration: 'underline' }}
-                        >
-                          Ver todas las órdenes
-                        </button>
-                      ) : (
-                        <button
-                          type="button"
-                          className="link-button"
-                          onClick={() => setShowOrderModal(true)}
-                          style={{ fontWeight: 600, textDecoration: 'underline' }}
-                        >
-                          Crear una orden nueva
-                        </button>
-                      )}
-                    </div>
-                  )}
-
-                  {selectedOrder && selectedOrder.estado === 'RECIBIDA' && (
-                    <p className="muted" style={{ fontSize: '12px', color: 'var(--color-warning)', marginTop: '6px' }}>
-                      Atención: Esta orden figura con estado RECIBIDA. Cualquier ingreso nuevo se registrará como recepción complementaria.
-                    </p>
-                  )}
-                </div>
-
-                {/* Selector de Contenedor Activo en Rampa (MOD-07) */}
-                <div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
-                    <label
-                      htmlFor="select-container"
-                      style={{ fontSize: '13px', fontWeight: 600, color: 'var(--color-text-secondary)', margin: 0 }}
-                    >
-                      Contenedor en rampa (MOD-07)
-                    </label>
-                    <span style={{ fontSize: '11px', color: 'var(--color-text-secondary)', fontWeight: 500 }}>
-                      {activeContainers.length} activos en patio
-                    </span>
-                  </div>
-
-                  <select
-                    id="select-container"
-                    value={selectedContainerId}
-                    onChange={(e) => setSelectedContainerId(e.target.value)}
-                    style={{
-                      width: '100%',
-                      padding: '10px 12px',
-                      border: '1px solid var(--color-border)',
-                      borderRadius: '6px',
-                      background: 'var(--color-surface)',
-                      color: 'var(--color-text-primary)',
-                      fontFamily: 'var(--font-body)',
-                      fontSize: '14px'
-                    }}
-                  >
-                    <option value="">-- Seleccione el contenedor activo en patio --</option>
-                    {activeContainers.map((c) => (
-                      <option key={c.id_contenedor} value={c.id_contenedor}>
-                        {c.numero_contenedor} — Placa: {c.placa_camion} ({c.tipo_personal === 'PROPIO' ? 'Personal propio' : `Cuadrilla: ${c.nombre_cuadrilla || 'Externa'}`})
-                      </option>
-                    ))}
-                    <option value="none">Sin contenedor registrado / Carga local suelta</option>
-                  </select>
-
-                  {selectedContainer ? (
-                    <div
-                      style={{
-                        marginTop: '6px',
-                        padding: '6px 10px',
-                        background: 'var(--color-brand-soft)',
-                        borderRadius: '4px',
-                        border: '1px solid var(--color-border)',
-                        fontSize: '11px',
-                        color: 'var(--color-brand-deep)'
-                      }}
-                    >
-                      <strong>🚚 Placa: {selectedContainer.placa_camion}</strong>
-                      {selectedContainer.empresa_transporte && ` • ${selectedContainer.empresa_transporte}`}
-                      <br />
-                      <span>
-                        Llegada: {new Date(selectedContainer.hora_llegada_contenedor).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} • {selectedContainer.tipo_personal === 'PROPIO' ? 'Personal propio' : `Cuadrilla ${selectedContainer.nombre_cuadrilla || 'Externa'} (${selectedContainer.num_estibadores || 0} p.)`}
-                      </span>
-                    </div>
-                  ) : (
-                    <span style={{ display: 'block', marginTop: '4px', fontSize: '11px', color: 'var(--color-text-secondary)' }}>
-                      Asocia las paletas que descargues a este camión para control de faltantes por contenedor.
-                    </span>
-                  )}
-                </div>
-
-                {/* Selector de Producto */}
-                <div>
-                  <label
-                    htmlFor="select-prod"
-                    style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: 'var(--color-text-secondary)', marginBottom: '6px' }}
-                  >
-                    Producto a recibir *
-                  </label>
-                  <select
-                    id="select-prod"
-                    value={selectedProductId}
-                    onChange={(e) => setSelectedProductId(e.target.value)}
-                    disabled={!selectedOrderId}
-                    style={{
-                      width: '100%',
-                      padding: '10px 12px',
-                      border: '1px solid var(--color-border)',
-                      borderRadius: '6px',
-                      background: !selectedOrderId ? 'var(--color-canvas)' : 'var(--color-surface)',
-                      color: 'var(--color-text-primary)',
-                      fontFamily: 'var(--font-body)',
-                      fontSize: '14px'
-                    }}
-                  >
-                    <option value="">-- Seleccione el producto --</option>
-                    {availableOrderProducts.map((prod) => (
-                      <option key={prod.id_producto} value={prod.id_producto}>
-                        {prod.sku} — {prod.nombre}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              {/* Ficha Técnica de Empaque del SKU seleccionado */}
-              {selectedProduct && (
-                <div
-                  style={{
-                    backgroundColor: 'var(--color-brand-soft)',
-                    padding: '14px 18px',
-                    borderRadius: '6px',
-                    border: '1px solid var(--color-border)',
-                    display: 'grid',
-                    gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
-                    gap: '14px'
-                  }}
-                >
-                  <div>
-                    <span className="muted" style={{ fontSize: '12px' }}>Regla estándar de estiba</span>
-                    <p style={{ margin: '2px 0 0 0', fontWeight: 600, color: 'var(--color-brand-deep)' }}>
-                      {selectedProduct.cajas_por_paleta} cajas / paleta completa
-                    </p>
-                  </div>
-                  <div>
-                    <span className="muted" style={{ fontSize: '12px' }}>Factor de empaque</span>
-                    <p style={{ margin: '2px 0 0 0', fontWeight: 600, color: 'var(--color-brand-deep)' }}>
-                      {selectedProduct.unidades_por_caja} unidades / caja
-                    </p>
-                  </div>
-                  <div>
-                    <span className="muted" style={{ fontSize: '12px' }}>Capacidad de paleta</span>
-                    <p style={{ margin: '2px 0 0 0', fontWeight: 600, color: 'var(--color-brand-deep)' }}>
-                      {selectedProduct.cajas_por_paleta * selectedProduct.unidades_por_caja} unidades / paleta
-                    </p>
-                  </div>
-                  {selectedOrderDetail && (
-                    <div>
-                      <span className="muted" style={{ fontSize: '12px' }}>Pactado en la orden</span>
-                      <p style={{ margin: '2px 0 0 0', fontWeight: 600, color: 'var(--color-brand-deep)' }}>
-                        {selectedOrderDetail.cantidad_pedida} unidades totales
-                      </p>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Tabla de avance y productos pactados de la orden en el contenedor */}
-              {selectedOrder && orderProductsProgress.length > 0 && (
-                <div style={{ marginTop: '10px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                    <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--color-brand-deep)' }}>
-                      Productos y paletas esperadas en la orden ({orderProductsProgress.length}):
-                    </span>
-                    <button
-                      type="button"
-                      className="button secondary button-sm"
-                      onClick={() => handleOpenOrderPacking(selectedOrder)}
-                      disabled={loadingPackingModal}
-                    >
-                      📦 Ver rótulos / Packing List
-                    </button>
-                  </div>
-
-                  <div className="table-wrap" style={{ margin: 0, maxHeight: '200px', overflowY: 'auto' }}>
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>SKU</th>
-                          <th>Producto</th>
-                          <th style={{ textAlign: 'right' }}>Pactado</th>
-                          <th style={{ textAlign: 'right' }}>Empaque</th>
-                          <th style={{ textAlign: 'center' }}>Paletas esperadas</th>
-                          <th style={{ textAlign: 'center' }}>Seleccionar</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {orderProductsProgress.map((item) => (
-                          <tr
-                            key={item.id_producto}
-                            style={{
-                              backgroundColor: Number(selectedProductId) === item.id_producto ? 'var(--color-brand-soft)' : undefined
-                            }}
-                          >
-                            <td>
-                              <code style={{ fontSize: '12px', fontWeight: 600, color: 'var(--color-brand-deep)' }}>
-                                {item.sku}
-                              </code>
-                            </td>
-                            <td>
-                              <strong style={{ color: 'var(--color-text-primary)' }}>{item.nombre}</strong>
-                            </td>
-                            <td style={{ textAlign: 'right', fontWeight: 600 }}>
-                              {item.cantPedida.toLocaleString('es-PE')} unid
-                            </td>
-                            <td style={{ textAlign: 'right', fontSize: '12px' }}>
-                              {item.cajasPal} caj/pal × {item.unidCaja} unid
-                            </td>
-                            <td style={{ textAlign: 'center' }}>
-                              <span
-                                style={{
-                                  background: 'var(--color-brand-soft)',
-                                  color: 'var(--color-brand-deep)',
-                                  padding: '2px 8px',
-                                  borderRadius: '4px',
-                                  fontWeight: 600,
-                                  fontSize: '12px'
-                                }}
-                              >
-                                {item.paletasPactadas} paleta(s)
-                              </span>
-                            </td>
-                            <td style={{ textAlign: 'center' }}>
-                              <button
-                                type="button"
-                                className="button secondary button-sm"
-                                onClick={() => setSelectedProductId(String(item.id_producto))}
-                              >
-                                {Number(selectedProductId) === item.id_producto ? '✓ Activo' : 'Elegir'}
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              )}
-
-              <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '6px' }}>
-                <button
-                  type="button"
-                  className="button primary"
-                  disabled={!selectedOrderId || !selectedProductId || !selectedWarehouseId}
-                  onClick={handleStartSession}
-                >
-                  Iniciar sesión de escaneo táctico
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* Consola de Escaneo Táctico y Conteo Ciego (Cuando la sesión está activa) */}
-          {sessionActive && selectedProduct && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-              {/* Barra de Estado de la Sesión */}
-              <div
-                className="panel"
-                style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  flexWrap: 'wrap',
-                  gap: '12px',
-                  backgroundColor: 'var(--color-surface)',
-                  borderLeft: '4px solid var(--color-brand)'
-                }}
-              >
-                <div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                    <span className="operational-status-pill">
-                      <span className="status-dot" />
-                      <span>Sesión activa</span>
-                    </span>
-                    <strong style={{ fontSize: '16px', color: 'var(--color-brand-deep)' }}>
-                      {selectedProduct.sku} — {selectedProduct.nombre}
-                    </strong>
-                  </div>
-                  <p className="muted" style={{ margin: '4px 0 0 0', fontSize: '13px' }}>
-                    Orden: <strong>{selectedOrder?.numero_orden}</strong> | Almacén de ingreso:{' '}
-                    <strong>{selectedWarehouse?.nombre}</strong> (Prefijo: {selectedWarehouse?.prefijo_rfid || 'IMP'})
-                  </p>
-                </div>
-                <div style={{ display: 'flex', gap: '10px' }}>
-                  <button type="button" className="button secondary button-sm" onClick={handleResetSession}>
-                    Reiniciar sesión
-                  </button>
-                  <button
-                    type="button"
-                    className="button primary button-sm"
-                    disabled={scannedItems.length === 0 || isSubmitting}
-                    onClick={handleFinishAndConciliate}
-                  >
-                    {isSubmitting ? 'Conciliando…' : 'Finalizar y conciliar mercancía'}
-                  </button>
-                </div>
-              </div>
-
-              {/* Tira de Métricas en Tiempo Real (Ciega - Sin sesgar al operario) */}
-              <div className="indicator-strip">
-                <div className="indicator-card">
-                  <span className="indicator-label">{selectedProduct.modo_manejo === 'SERIALIZADO' ? 'Equipos / Tags leídos' : 'Tags / Bultos leídos'}</span>
-                  <span className="indicator-value">{sessionSummary.totalTags}</span>
-                  <span className="indicator-context">En la sesión actual</span>
-                </div>
-                {selectedProduct.modo_manejo === 'SERIALIZADO' ? (
-                  <>
-                    <div className="indicator-card">
-                      <span className="indicator-label">Unidades recibidas</span>
-                      <span className="indicator-value">{sessionSummary.totalUnidades}</span>
-                      <span className="indicator-context">1 unidad física c/u</span>
-                    </div>
-                    <div className="indicator-card">
-                      <span className="indicator-label">Cantidad pedida</span>
-                      <span className="indicator-value">{selectedOrderDetail?.cantidad_pedida ?? '—'}</span>
-                      <span className="indicator-context">En orden de importación</span>
-                    </div>
-                    <div className="indicator-card">
-                      <span className="indicator-label">Modo de manejo</span>
-                      <span className="indicator-value" style={{ fontSize: '18px', color: 'var(--color-brand)' }}>Serializado</span>
-                      <span className="indicator-context">Trazabilidad por serie</span>
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <div className="indicator-card">
-                      <span className="indicator-label">Paletas completas</span>
-                      <span className="indicator-value">{sessionSummary.paletasCompletas}</span>
-                      <span className="indicator-context">{selectedProduct.cajas_por_paleta} cajas c/u</span>
-                    </div>
-                    <div className="indicator-card">
-                      <span className="indicator-label">Cajas pucho / parciales</span>
-                      <span className="indicator-value">{sessionSummary.totalPuchos}</span>
-                      <span className="indicator-context">Cajas sueltas escaneadas</span>
-                    </div>
-                    <div className="indicator-card">
-                      <span className="indicator-label">Unidades totales leídas</span>
-                      <span className="indicator-value">{sessionSummary.totalUnidades}</span>
-                      <span className="indicator-context">
-                        {sessionSummary.totalCajas} cajas × {selectedProduct.unidades_por_caja} unid
-                      </span>
-                    </div>
-                  </>
-                )}
-              </div>
-
-              {/* Consola de Entrada Táctica de Tags */}
-              <div className="panel" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                <h3 className="section-title" style={{ margin: 0, fontSize: '16px', color: 'var(--color-brand-deep)' }}>
-                  {selectedProduct.modo_manejo === 'SERIALIZADO'
-                    ? 'Consola de recepción individual de maquinaria / equipos serializados'
-                    : 'Consola de escaneo táctico (RFID / NFC / Código de Barras)'}
-                </h3>
-                <p className="muted" style={{ margin: 0, fontSize: '13px' }}>
-                  {selectedProduct.modo_manejo === 'SERIALIZADO'
-                    ? 'Ingrese o escanee el número de serie de fábrica y asócielo a su transponder RFID. El sistema valida la unicidad física y sugerirá el siguiente código de tag disponible.'
-                    : 'Escanee con lector láser, sensor NFC o ingrese el tag y presione Enter. El sistema busca de menor a mayor los huecos libres disponibles con el prefijo oficial.'}
-                </p>
-
-                <form onSubmit={handleAddReading} style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-                  {selectedProduct.modo_manejo === 'SERIALIZADO' ? (
-                    <div
-                      style={{
-                        padding: '10px 14px',
-                        background: 'var(--color-brand-soft)',
-                        border: '1px solid var(--color-border)',
-                        borderRadius: '6px',
-                        fontSize: '13px',
-                        color: 'var(--color-brand-deep)'
-                      }}
-                    >
-                      <strong>Recepción de Maquinaria y Equipos:</strong> Cada equipo se registra de forma unitaria asociando su número de serie grabado de fábrica con su Tag RFID correspondiente.
-                    </div>
-                  ) : (
-                    /* Selector de Modo: Paleta Completa vs Pucho */
-                    <div style={{ display: 'flex', gap: '20px', alignItems: 'center' }}>
-                      <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '14px', fontWeight: 500 }}>
-                        <input
-                          type="radio"
-                          name="scanType"
-                          value="COMPLETO"
-                          checked={scanType === 'COMPLETO'}
-                          onChange={() => setScanType('COMPLETO')}
-                        />
-                        <span>Paleta completa estándar ({selectedProduct.cajas_por_paleta} cajas)</span>
-                      </label>
-
-                      <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '14px', fontWeight: 500 }}>
-                        <input
-                          type="radio"
-                          name="scanType"
-                          value="PUCHO"
-                          checked={scanType === 'PUCHO'}
-                          onChange={() => setScanType('PUCHO')}
-                        />
-                        <span>Carga pucho (Bultos parciales)</span>
-                      </label>
-                    </div>
-                  )}
-
-                  {/* Campos de captura */}
-                  <div style={{ display: 'flex', gap: '12px', alignItems: 'flex-end', flexWrap: 'wrap' }}>
-                    {selectedProduct.modo_manejo === 'SERIALIZADO' && (
-                      <div style={{ flex: '1 1 240px' }}>
-                        <label
-                          htmlFor="serial-input"
-                          style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: 'var(--color-text-secondary)', marginBottom: '6px' }}
-                        >
-                          Número de Serie de Fábrica *
-                        </label>
-                        <input
-                          id="serial-input"
-                          type="text"
-                          placeholder="Ej: SN-CAT-2026-001"
-                          value={scanNumeroSerie}
-                          onChange={(e) => {
-                            setScanNumeroSerie(e.target.value)
-                            setScanError(null)
-                          }}
-                          style={{
-                            width: '100%',
-                            padding: '10px 14px',
-                            border: '1px solid var(--color-border)',
-                            borderRadius: '6px',
-                            background: 'var(--color-surface)',
-                            color: 'var(--color-brand-deep)',
-                            fontFamily: 'var(--font-body)',
-                            fontSize: '15px',
-                            fontWeight: 600
-                          }}
-                        />
-                      </div>
-                    )}
-
-                    <div style={{ flex: '1 1 240px' }}>
-                      <label
-                        htmlFor="tag-input"
-                        style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: 'var(--color-text-secondary)', marginBottom: '6px' }}
-                      >
-                        Identificador UID del Tag RFID / NFC *
-                      </label>
-                      <input
-                        id="tag-input"
-                        type="text"
-                        placeholder={`Ej: ${selectedWarehouse?.prefijo_rfid || 'IMP'}00001 o escanee con lector`}
-                        value={scanUid}
-                        onChange={(e) => {
-                          setScanUid(e.target.value)
-                          setScanError(null)
-                        }}
-                        autoFocus={selectedProduct.modo_manejo !== 'SERIALIZADO'}
-                        style={{
-                          width: '100%',
-                          padding: '10px 14px',
-                          border: '1px solid var(--color-border)',
-                          borderRadius: '6px',
-                          background: 'var(--color-surface)',
-                          color: 'var(--color-brand-deep)',
-                          fontFamily: 'var(--font-body)',
-                          fontSize: '15px',
-                          fontWeight: 600
-                        }}
-                      />
-                    </div>
-
-                    {selectedProduct.modo_manejo !== 'SERIALIZADO' && scanType === 'PUCHO' && (
-                      <div style={{ width: '150px' }}>
-                        <label
-                          htmlFor="pucho-boxes"
-                          style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: 'var(--color-text-secondary)', marginBottom: '6px' }}
-                        >
-                          Cajas sueltas *
-                        </label>
-                        <input
-                          id="pucho-boxes"
-                          type="number"
-                          min="1"
-                          max={selectedProduct.cajas_por_paleta - 1}
-                          value={puchoBoxes}
-                          onChange={(e) => setPuchoBoxes(Math.max(1, Number(e.target.value)))}
-                          style={{
-                            width: '100%',
-                            padding: '10px 12px',
-                            border: '1px solid var(--color-border)',
-                            borderRadius: '6px',
-                            background: 'var(--color-surface)',
-                            color: 'var(--color-text-primary)',
-                            fontFamily: 'var(--font-body)',
-                            fontSize: '14px'
-                          }}
-                        />
-                      </div>
-                    )}
-
-                    <div style={{ display: 'flex', gap: '8px' }}>
-                      <button type="button" className="button secondary" onClick={handleSuggestUid}>
-                        Sugerir correlativo
-                      </button>
-                      <button type="submit" className="button primary">
-                        {selectedProduct.modo_manejo === 'SERIALIZADO' ? 'Registrar equipo' : 'Registrar lectura'}
-                      </button>
-                    </div>
-                  </div>
-
-                  {scanError && (
-                    <div
-                      style={{
-                        padding: '8px 12px',
-                        fontSize: '13px',
-                        background: '#FDF2F0',
-                        color: 'var(--color-danger)',
-                        borderRadius: '4px',
-                        border: '1px solid rgba(179, 64, 42, 0.2)'
-                      }}
-                    >
-                      {scanError}
-                    </div>
-                  )}
-                </form>
-              </div>
-
-              {/* Bitácora de Lecturas de la Sesión en Vivo (.table-wrap) */}
-              <div className="panel" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <h3 className="section-title" style={{ margin: 0, fontSize: '16px', color: 'var(--color-brand-deep)' }}>
-                    Bultos escaneados en esta sesión ({scannedItems.length})
-                  </h3>
-                  <span className="muted" style={{ fontSize: '13px' }}>
-                    Quedarán registrados en la bitácora inmutable al conciliar
-                  </span>
-                </div>
-
-                {scannedItems.length === 0 ? (
-                  <div className="empty-attention" style={{ padding: '30px' }}>
-                    <p style={{ margin: 0 }}>Aún no se han registrado lecturas en esta sesión.</p>
-                  </div>
-                ) : (
-                  <div className="table-wrap">
-                    <table>
-                      <thead>
-                        <tr>
-                          <th style={{ width: '60px' }}>N°</th>
-                          <th>UID Tag RFID</th>
-                          <th>{selectedProduct.modo_manejo === 'SERIALIZADO' ? 'Número de Serie' : 'Tipo de carga'}</th>
-                          <th>{selectedProduct.modo_manejo === 'SERIALIZADO' ? 'Detalle' : 'Cajas'}</th>
-                          <th>Unidades</th>
-                          <th style={{ width: '100px', textAlign: 'center' }}>Acción</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {scannedItems.map((item, idx) => {
-                          const nro = scannedItems.length - idx
-                          const unidades = selectedProduct.modo_manejo === 'SERIALIZADO'
-                            ? 1
-                            : item.cantidad_paquetes * selectedProduct.unidades_por_caja
-                          return (
-                            <tr key={item.uid}>
-                              <td style={{ fontWeight: 600 }}>#{nro}</td>
-                              <td>
-                                <strong style={{ color: 'var(--color-brand-deep)' }}>{item.uid}</strong>
-                              </td>
-                              <td>
-                                {selectedProduct.modo_manejo === 'SERIALIZADO' ? (
-                                  <span style={{ fontWeight: 600, color: 'var(--color-brand)' }}>
-                                    {item.numero_serie || '—'}
-                                  </span>
-                                ) : item.tipo === 'COMPLETO' ? (
-                                  <span
-                                    style={{
-                                      background: 'var(--color-brand-soft)',
-                                      color: 'var(--color-brand-deep)',
-                                      padding: '3px 8px',
-                                      borderRadius: '4px',
-                                      fontSize: '12px',
-                                      fontWeight: 600
-                                    }}
-                                  >
-                                    Paleta completa
-                                  </span>
-                                ) : (
-                                  <span
-                                    style={{
-                                      background: '#FDF6EC',
-                                      color: 'var(--color-warning)',
-                                      padding: '3px 8px',
-                                      borderRadius: '4px',
-                                      fontSize: '12px',
-                                      fontWeight: 600
-                                    }}
-                                  >
-                                    Pucho ({item.cantidad_paquetes} cajas)
-                                  </span>
-                                )}
-                              </td>
-                              <td>{selectedProduct.modo_manejo === 'SERIALIZADO' ? '1 equipo único' : `${item.cantidad_paquetes} cajas`}</td>
-                              <td>{unidades} unid</td>
-                              <td style={{ textAlign: 'center' }}>
-                                <button
-                                  type="button"
-                                  className="button secondary button-sm"
-                                  style={{ color: 'var(--color-danger)', borderColor: 'rgba(179, 64, 42, 0.3)' }}
-                                  onClick={() => handleRemoveReading(item.uid)}
-                                  title="Quitar lectura"
-                                >
-                                  Eliminar
-                                </button>
-                              </td>
-                            </tr>
-                          )
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-
-                {/* Botón de cierre al pie de la tabla */}
-                {scannedItems.length > 0 && (
-                  <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '10px' }}>
-                    <button
-                      type="button"
-                      className="button primary"
-                      disabled={isSubmitting}
-                      onClick={handleFinishAndConciliate}
-                    >
-                      {isSubmitting ? 'Procesando conciliación…' : 'Finalizar recepción y conciliar mercancía'}
-                    </button>
-                  </div>
-                )}
-              </div>
-
-              {/* Tabla de Avance y Estado de Todos los Productos de la Orden en Tiempo Real */}
-              {selectedOrder && orderProductsProgress.length > 0 && (
-                <div className="panel" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
-                    <div>
-                      <h3 className="section-title" style={{ margin: 0, fontSize: '16px', color: 'var(--color-brand-deep)' }}>
-                        Avance general de la orden — {selectedOrder.numero_orden} ({selectedOrder.tipo_contenedor || '40FT'})
-                      </h3>
-                      <p className="muted" style={{ margin: '2px 0 0 0', fontSize: '13px' }}>
-                        Recuento en tiempo real: unidades ingresadas, paletas escaneadas y faltantes por producto.
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      className="button secondary button-sm"
-                      onClick={() => handleOpenOrderPacking(selectedOrder)}
-                      disabled={loadingPackingModal}
-                    >
-                      📦 Ver rótulos / Packing List
-                    </button>
-                  </div>
-
-                  <div className="table-wrap" style={{ margin: 0 }}>
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>SKU</th>
-                          <th>Producto</th>
-                          <th style={{ textAlign: 'right' }}>Pactado</th>
-                          <th style={{ textAlign: 'right' }}>Ingresado</th>
-                          <th style={{ textAlign: 'right' }}>Falta</th>
-                          <th style={{ width: '160px' }}>Progreso</th>
-                          <th style={{ textAlign: 'center' }}>Estado</th>
-                          <th style={{ textAlign: 'center' }}>Acción</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {orderProductsProgress.map((item) => {
-                          const isCurrent = Number(selectedProductId) === item.id_producto
-
-                          return (
-                            <tr
-                              key={item.id_producto}
-                              style={{
-                                backgroundColor: isCurrent ? 'var(--color-brand-soft)' : undefined
-                              }}
-                            >
-                              <td>
-                                <code style={{ fontSize: '12px', fontWeight: 600, color: 'var(--color-brand-deep)' }}>
-                                  {item.sku}
-                                </code>
-                              </td>
-                              <td>
-                                <strong style={{ color: 'var(--color-text-primary)' }}>{item.nombre}</strong>
-                              </td>
-                              <td style={{ textAlign: 'right', fontWeight: 600 }}>
-                                {item.cantPedida.toLocaleString('es-PE')} unid
-                                <div style={{ fontSize: '11px', color: 'var(--color-text-secondary)' }}>
-                                  {item.paletasPactadas} paleta(s)
-                                </div>
-                              </td>
-                              <td style={{ textAlign: 'right', fontWeight: 700, color: 'var(--color-brand)' }}>
-                                {item.unidadesLeidas.toLocaleString('es-PE')} unid
-                                <div style={{ fontSize: '11px', color: 'var(--color-text-secondary)' }}>
-                                  {item.paletasLeidas} comp.{item.puchosLeidos > 0 ? ` + ${item.puchosLeidos} pucho` : ''}
-                                </div>
-                              </td>
-                              <td style={{ textAlign: 'right', fontWeight: 600, color: item.faltantes > 0 ? 'var(--color-warning)' : 'var(--color-success)' }}>
-                                {item.faltantes > 0 ? `${item.faltantes.toLocaleString('es-PE')} unid` : 'Completo'}
-                              </td>
-                              <td>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                  <div
-                                    style={{
-                                      flex: 1,
-                                      height: '8px',
-                                      backgroundColor: 'var(--color-border)',
-                                      borderRadius: '4px',
-                                      overflow: 'hidden'
-                                    }}
-                                  >
-                                    <div
-                                      style={{
-                                        width: `${item.porcentaje}%`,
-                                        height: '100%',
-                                        backgroundColor:
-                                          item.estado === 'SOBRANTE'
-                                            ? 'var(--color-warning)'
-                                            : item.estado === 'COMPLETO'
-                                            ? 'var(--color-success)'
-                                            : 'var(--color-brand)'
-                                      }}
-                                    />
-                                  </div>
-                                  <span style={{ fontSize: '12px', fontWeight: 600, width: '38px', textAlign: 'right' }}>
-                                    {item.porcentaje}%
-                                  </span>
-                                </div>
-                              </td>
-                              <td style={{ textAlign: 'center' }}>
-                                <span
-                                  style={{
-                                    padding: '2px 8px',
-                                    borderRadius: '4px',
-                                    fontSize: '11px',
-                                    fontWeight: 600,
-                                    border: '1px solid var(--color-border)',
-                                    background:
-                                      item.estado === 'COMPLETO'
-                                        ? '#EAF5ED'
-                                        : item.estado === 'SOBRANTE'
-                                        ? '#FFF8EE'
-                                        : item.estado === 'EN_PROCESO'
-                                        ? 'var(--color-brand-soft)'
-                                        : 'var(--color-canvas)',
-                                    color:
-                                      item.estado === 'COMPLETO'
-                                        ? 'var(--color-success)'
-                                        : item.estado === 'SOBRANTE'
-                                        ? 'var(--color-warning)'
-                                        : item.estado === 'EN_PROCESO'
-                                        ? 'var(--color-brand-deep)'
-                                        : 'var(--color-text-secondary)'
-                                  }}
-                                >
-                                  {item.estado === 'COMPLETO'
-                                    ? 'Completo'
-                                    : item.estado === 'SOBRANTE'
-                                    ? 'Sobrante'
-                                    : item.estado === 'EN_PROCESO'
-                                    ? 'En proceso'
-                                    : 'Pendiente'}
-                                </span>
-                              </td>
-                              <td style={{ textAlign: 'center' }}>
-                                {isCurrent ? (
-                                  <span style={{ fontSize: '12px', color: 'var(--color-brand)', fontWeight: 600 }}>
-                                    Activo
-                                  </span>
-                                ) : (
-                                  <button
-                                    type="button"
-                                    className="button secondary button-sm"
-                                    onClick={() => setSelectedProductId(String(item.id_producto))}
-                                  >
-                                    Escanear
-                                  </button>
-                                )}
-                              </td>
-                            </tr>
-                          )
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* 5. CONTENIDO: Pestaña 2 - Historial de Recepciones */}
-      {activeTab === 'historial' && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-          {/* Filtros del historial */}
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
-            <div style={{ display: 'flex', gap: '8px' }}>
-              <button
-                type="button"
-                className={`button button-sm ${historyFilter === 'ALL' ? 'primary' : 'secondary'}`}
-                onClick={() => setHistoryFilter('ALL')}
-              >
-                Todos ({history.length})
-              </button>
-              <button
-                type="button"
-                className={`button button-sm ${historyFilter === 'COMPLETA' ? 'primary' : 'secondary'}`}
-                onClick={() => setHistoryFilter('COMPLETA')}
-              >
-                Completas ({history.filter((h) => h.conciliacion?.estado === 'COMPLETA').length})
-              </button>
-              <button
-                type="button"
-                className={`button button-sm ${historyFilter === 'FALTANTES' ? 'primary' : 'secondary'}`}
-                onClick={() => setHistoryFilter('FALTANTES')}
-              >
-                Con faltantes ({history.filter((h) => h.conciliacion?.estado === 'FALTANTES').length})
-              </button>
-              <button
-                type="button"
-                className={`button button-sm ${historyFilter === 'SOBRANTES' ? 'primary' : 'secondary'}`}
-                onClick={() => setHistoryFilter('SOBRANTES')}
-              >
-                Con sobrantes ({history.filter((h) => h.conciliacion?.estado === 'SOBRANTES').length})
-              </button>
-            </div>
-
-            <span className="muted" style={{ fontSize: '13px' }}>
-              Mostrando {filteredHistory.length} sesiones
-            </span>
-          </div>
-
-          {/* Tabla de Historial (.table-wrap) */}
-          <div className="table-wrap" style={{ margin: 0 }}>
-            {filteredHistory.length === 0 ? (
-              <div className="empty-attention" style={{ padding: '36px' }}>
-                <p style={{ margin: 0 }}>No hay sesiones de recepción registradas para este filtro.</p>
-              </div>
-            ) : (
-              <table>
-                <thead>
-                  <tr>
-                    <th>Sesión</th>
-                    <th>Fecha y hora</th>
-                    <th>Almacén</th>
-                    <th>Orden / Proveedor</th>
-                    <th>Producto SKU</th>
-                    <th>Paletas</th>
-                    <th>Puchos</th>
-                    <th>Veredicto</th>
-                    <th>Responsable</th>
-                    <th style={{ textAlign: 'center' }}>Lecturas</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredHistory.map((sess) => {
-                    const cEstado = sess.conciliacion?.estado || sess.estado
-                    const isComplete = cEstado === 'COMPLETA'
-                    const isMissing = cEstado === 'FALTANTES'
-
-                    return (
-                      <tr key={sess.id_sesion}>
-                        <td>
-                          <strong>#{sess.id_sesion}</strong>
-                        </td>
-                        <td>
-                          {new Date(sess.fecha_inicio).toLocaleDateString()}{' '}
-                          <span className="muted" style={{ fontSize: '12px' }}>
-                            {new Date(sess.fecha_inicio).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                          </span>
-                        </td>
-                        <td>{sess.almacen?.nombre || `Almacén ${sess.id_almacen}`}</td>
-                        <td>
-                          <strong>{sess.orden?.numero_orden || 'Directa'}</strong>
-                          <div className="muted" style={{ fontSize: '12px' }}>
-                            {sess.orden?.proveedor?.nombre || '—'}
-                          </div>
-                        </td>
-                        <td>
-                          <span className="sku-badge">{sess.producto?.sku || 'SKU'}</span>
-                          <div className="muted" style={{ fontSize: '12px', marginTop: '2px' }}>
-                            {sess.producto?.nombre}
-                          </div>
-                        </td>
-                        <td>{sess.total_paletas_completas}</td>
-                        <td>{sess.total_paquetes_puchos}</td>
-                        <td>
-                          {isComplete ? (
-                            <span
-                              style={{
-                                background: '#EAF5ED',
-                                color: 'var(--color-success)',
-                                padding: '3px 8px',
-                                borderRadius: '4px',
-                                fontSize: '12px',
-                                fontWeight: 600,
-                                border: '1px solid rgba(47, 125, 79, 0.2)'
-                              }}
-                            >
-                              Completa
-                            </span>
-                          ) : isMissing ? (
-                            <span
-                              style={{
-                                background: '#FDF6EC',
-                                color: 'var(--color-warning)',
-                                padding: '3px 8px',
-                                borderRadius: '4px',
-                                fontSize: '12px',
-                                fontWeight: 600,
-                                border: '1px solid rgba(188, 121, 31, 0.2)'
-                              }}
-                            >
-                              Faltantes
-                            </span>
-                          ) : (
-                            <span
-                              style={{
-                                background: 'var(--color-brand-soft)',
-                                color: 'var(--color-brand)',
-                                padding: '3px 8px',
-                                borderRadius: '4px',
-                                fontSize: '12px',
-                                fontWeight: 600,
-                                border: '1px solid var(--color-border)'
-                              }}
-                            >
-                              {cEstado.charAt(0).toUpperCase() + cEstado.slice(1).toLowerCase()}
-                            </span>
-                          )}
-                        </td>
-                        <td>{sess.usuario?.nombre_completo || sess.usuario?.email || 'Operario'}</td>
-                        <td style={{ textAlign: 'center' }}>
-                          <button
-                            type="button"
-                            className="btn-detail"
-                            onClick={() => handleOpenInspectSession(sess)}
-                          >
-                            Ver detalle
-                          </button>
-                        </td>
-                      </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* 6. CONTENIDO: Pestaña 3 - Órdenes de Importación */}
-      {activeTab === 'ordenes' && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
+          {/* Cabecera Principal con Selector de Almacén Buscable */}
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              flexWrap: 'wrap',
+              gap: '16px',
+              paddingBottom: '16px',
+              borderBottom: '1px solid var(--color-border)'
+            }}
+          >
             <div>
-              <h2 className="section-title" style={{ margin: 0, fontSize: '18px', color: 'var(--color-brand-deep)' }}>
+              <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--color-brand)' }}>
+                Módulo 04 · Recepciones tácticas en muelle
+              </span>
+              <h1 className="page-title" style={{ margin: '2px 0 0 0', fontSize: '24px', color: 'var(--color-brand-deep)' }}>
                 Órdenes de importación y embarques
-              </h2>
-              <p className="muted" style={{ margin: '4px 0 0 0', fontSize: '13px' }}>
-                Control de pedidos de importación en tránsito y planificación de recepción en muelle.
+              </h1>
+              <p className="muted" style={{ margin: '2px 0 0 0', fontSize: '13px' }}>
+                Recepción de contenedores llegados al patio, conciliación física y asignación de códigos RFID.
               </p>
             </div>
-            <button type="button" className="button primary" onClick={() => setShowOrderModal(true)}>
-              Nueva orden de importación
-            </button>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+              {/* Selector Inteligente de Almacén (Sin scroll horizontal) */}
+              <WarehouseSearchSelector
+                warehouses={warehouses}
+                selectedWarehouseId={selectedWarehouseId}
+                onSelectWarehouse={(id) => setSelectedWarehouseId(id)}
+              />
+
+              <button
+                type="button"
+                className="button primary"
+                onClick={() => setShowOrderModal(true)}
+                style={{ fontWeight: 600 }}
+              >
+                + Nueva orden de importación
+              </button>
+            </div>
           </div>
 
+          {/* Barra de Filtros y Búsqueda */}
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              flexWrap: 'wrap',
+              gap: '12px'
+            }}
+          >
+            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+              <button
+                type="button"
+                className={`button ${orderFilter === 'ALL' ? 'primary' : 'secondary'} button-sm`}
+                onClick={() => setOrderFilter('ALL')}
+                style={{ fontSize: '13px' }}
+              >
+                Todas las órdenes ({orders.length})
+              </button>
+              <button
+                type="button"
+                className={`button ${orderFilter === 'PENDING' ? 'primary' : 'secondary'} button-sm`}
+                onClick={() => setOrderFilter('PENDING')}
+                style={{ fontSize: '13px' }}
+              >
+                En tránsito / Muelle ({orders.filter((o) => o.estado === 'TRANSITO' || o.estado === 'BORRADOR').length})
+              </button>
+              <button
+                type="button"
+                className={`button ${orderFilter === 'RECEIVED' ? 'primary' : 'secondary'} button-sm`}
+                onClick={() => setOrderFilter('RECEIVED')}
+                style={{ fontSize: '13px' }}
+              >
+                Recibidas ({orders.filter((o) => o.estado === 'RECIBIDA').length})
+              </button>
+            </div>
+
+            <div style={{ width: '320px', maxWidth: '100%' }}>
+              <input
+                type="text"
+                placeholder="Buscar orden por N°, proveedor o SKU..."
+                value={searchOrderTerm}
+                onChange={(e) => setSearchOrderTerm(e.target.value)}
+                style={{
+                  width: '100%',
+                  padding: '7px 12px',
+                  fontSize: '13px',
+                  borderRadius: '6px',
+                  border: '1px solid var(--color-border)',
+                  background: 'var(--color-surface)',
+                  boxSizing: 'border-box'
+                }}
+              />
+            </div>
+          </div>
+
+          {/* Tabla de Órdenes */}
           <div className="table-wrap" style={{ margin: 0 }}>
-            {orders.length === 0 ? (
-              <div className="empty-attention" style={{ padding: '36px' }}>
-                <p style={{ margin: 0 }}>No hay órdenes de importación registradas en tránsito.</p>
+            {loading ? (
+              <div style={{ padding: '36px', textAlign: 'center', color: 'var(--color-text-secondary)' }}>
+                Cargando órdenes de importación y embarques...
+              </div>
+            ) : filteredOrders.length === 0 ? (
+              <div style={{ padding: '36px', textAlign: 'center', color: 'var(--color-text-secondary)' }}>
+                No se encontraron órdenes registradas para el filtro seleccionado.
               </div>
             ) : (
               <table>
@@ -2006,10 +496,12 @@ export function ReceptionsPage({ onBack, onNavigateToInventory, initialContainer
                   </tr>
                 </thead>
                 <tbody>
-                  {orders.map((ord) => (
+                  {filteredOrders.map((ord) => (
                     <tr key={ord.id_orden}>
                       <td>
-                        <strong style={{ color: 'var(--color-brand-deep)' }}>{ord.numero_orden}</strong>
+                        <strong style={{ color: 'var(--color-brand-deep)', fontSize: '14px' }}>
+                          {ord.numero_orden}
+                        </strong>
                       </td>
                       <td>{ord.fecha_emision}</td>
                       <td>{ord.proveedor?.nombre || ord.proveedor?.razon_social || 'Proveedor genérico'}</td>
@@ -2030,13 +522,9 @@ export function ReceptionsPage({ onBack, onNavigateToInventory, initialContainer
                       </td>
                       <td>
                         {ord.detalles && ord.detalles.length > 0 ? (
-                          <ul style={{ margin: 0, paddingLeft: '16px', fontSize: '13px' }}>
-                            {ord.detalles.map((d) => (
-                              <li key={d.id_detalle}>
-                                <strong>{d.producto?.sku}</strong>: {d.cantidad_pedida} unid
-                              </li>
-                            ))}
-                          </ul>
+                          <div style={{ fontSize: '13px' }}>
+                            {ord.detalles.length} producto(s) · {ord.detalles.reduce((acc, d) => acc + (Number(d.cantidad_pedida) || 0), 0).toLocaleString('es-PE')} unid
+                          </div>
                         ) : (
                           <span className="muted">Sin detalles</span>
                         )}
@@ -2063,32 +551,31 @@ export function ReceptionsPage({ onBack, onNavigateToInventory, initialContainer
                             border: '1px solid var(--color-border)'
                           }}
                         >
-                          {ord.estado.charAt(0).toUpperCase() + ord.estado.slice(1).toLowerCase()}
+                          {ord.estado === 'RECIBIDA'
+                            ? 'Recibida en muelle'
+                            : ord.estado === 'TRANSITO'
+                            ? 'En tránsito'
+                            : 'Borrador'}
                         </span>
                       </td>
                       <td style={{ textAlign: 'center' }}>
-                        <div style={{ display: 'inline-flex', gap: '6px', alignItems: 'center' }}>
+                        <div style={{ display: 'inline-flex', gap: '8px', alignItems: 'center' }}>
                           <button
                             type="button"
                             className="button secondary button-sm"
                             onClick={() => handleOpenOrderPacking(ord)}
                             disabled={loadingPackingModal}
-                            title="Ver desglose de paletas esperadas y descargar rótulos Excel para el muelle"
+                            title="Ver desglose de paletas esperadas y descargar rótulos"
                           >
-                            📦 Packing / Rótulos
+                            Packing / Rótulos
                           </button>
                           <button
                             type="button"
                             className="button primary button-sm"
-                            onClick={() => {
-                              setSelectedOrderId(String(ord.id_orden))
-                              if (ord.detalles && ord.detalles.length > 0) {
-                                setSelectedProductId(String(ord.detalles[0].id_producto))
-                              }
-                              setActiveTab('operar')
-                            }}
+                            onClick={() => handleOpenOrderReception(ord)}
+                            style={{ fontWeight: 600, padding: '6px 14px' }}
                           >
-                            Recepcionar
+                            {ord.estado === 'RECIBIDA' ? 'Ver recepción' : 'Recepcionar'}
                           </button>
                         </div>
                       </td>
@@ -2101,146 +588,47 @@ export function ReceptionsPage({ onBack, onNavigateToInventory, initialContainer
         </div>
       )}
 
-      {/* 7. MODAL: Inspección de Lecturas de una Sesión Histórica */}
-      {inspectSession && (
-        <div className="modal-backdrop" role="dialog" aria-modal="true">
-          <div className="modal-card" style={{ maxWidth: '800px', width: '90%' }}>
-            <div className="modal-header">
-              <h2 className="modal-title" style={{ margin: 0, fontSize: '18px', color: 'var(--color-brand-deep)' }}>
-                Auditoría de lecturas — Sesión #{inspectSession.id_sesion}
-              </h2>
-              <button
-                type="button"
-                className="modal-close-btn"
-                onClick={() => setInspectSession(null)}
-                aria-label="Cerrar ventana"
-              >
-                ✕
-              </button>
-            </div>
-
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-              <div
-                style={{
-                  display: 'grid',
-                  gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
-                  gap: '10px',
-                  backgroundColor: 'var(--color-canvas)',
-                  padding: '12px 16px',
-                  borderRadius: '6px',
-                  border: '1px solid var(--color-border)'
-                }}
-              >
-                <div>
-                  <span className="muted" style={{ fontSize: '12px' }}>Producto</span>
-                  <p style={{ margin: 0, fontWeight: 600, color: 'var(--color-brand-deep)' }}>{inspectSession.producto?.sku}</p>
-                </div>
-                <div>
-                  <span className="muted" style={{ fontSize: '12px' }}>Almacén</span>
-                  <p style={{ margin: 0, fontWeight: 600, color: 'var(--color-brand-deep)' }}>{inspectSession.almacen?.nombre}</p>
-                </div>
-                <div>
-                  <span className="muted" style={{ fontSize: '12px' }}>Orden</span>
-                  <p style={{ margin: 0, fontWeight: 600, color: 'var(--color-brand-deep)' }}>{inspectSession.orden?.numero_orden || 'Directa'}</p>
-                </div>
-                <div>
-                  <span className="muted" style={{ fontSize: '12px' }}>Estado</span>
-                  <p style={{ margin: 0, fontWeight: 600, color: 'var(--color-brand-deep)' }}>
-                    {inspectSession.conciliacion?.estado || inspectSession.estado}
-                  </p>
-                </div>
-              </div>
-
-              {loadingReadings ? (
-                <p className="screen-message" style={{ padding: '20px' }}>Cargando lecturas…</p>
-              ) : sessionReadings.length === 0 ? (
-                <p className="muted" style={{ padding: '20px', textAlign: 'center' }}>No se encontraron lecturas registradas.</p>
-              ) : (
-                <div className="table-wrap" style={{ maxHeight: '380px', overflowY: 'auto', margin: 0 }}>
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>N°</th>
-                        <th>UID Tag RFID</th>
-                        <th>Tipo de carga</th>
-                        <th>Cajas</th>
-                        <th>Unidades</th>
-                        <th>Hora de escaneo</th>
-                        <th>Validez</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {sessionReadings.map((r, i) => (
-                        <tr key={r.id_lectura}>
-                          <td>#{i + 1}</td>
-                          <td>
-                            <strong style={{ color: 'var(--color-brand-deep)' }}>{r.uid_tag}</strong>
-                          </td>
-                          <td>
-                            {r.tipo_carga === 'COMPLETO' ? (
-                              <span
-                                style={{
-                                  background: 'var(--color-brand-soft)',
-                                  color: 'var(--color-brand-deep)',
-                                  padding: '2px 6px',
-                                  borderRadius: '4px',
-                                  fontSize: '11px',
-                                  fontWeight: 600
-                                }}
-                              >
-                                Paleta completa
-                              </span>
-                            ) : (
-                              <span
-                                style={{
-                                  background: '#FDF6EC',
-                                  color: 'var(--color-warning)',
-                                  padding: '2px 6px',
-                                  borderRadius: '4px',
-                                  fontSize: '11px',
-                                  fontWeight: 600
-                                }}
-                              >
-                                Pucho
-                              </span>
-                            )}
-                          </td>
-                          <td>{r.cantidad_paquetes}</td>
-                          <td>{r.cantidad_unidades}</td>
-                          <td>{new Date(r.leido_en).toLocaleTimeString()}</td>
-                          <td>
-                            <span
-                              style={{
-                                color: r.valido ? 'var(--color-success)' : 'var(--color-danger)',
-                                fontWeight: 600,
-                                fontSize: '12px'
-                              }}
-                            >
-                              {r.valido ? 'Válido' : 'Inválido'}
-                            </span>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
-
-            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '18px', paddingTop: '14px', borderTop: '1px solid var(--color-border)' }}>
-              <button
-                type="button"
-                className="button secondary"
-                onClick={() => setInspectSession(null)}
-              >
-                Cerrar
-              </button>
-            </div>
-          </div>
-        </div>
+      {/* VISTA 2: Vista de la Orden con Compuerta de Contenedor */}
+      {viewMode === 'order_reception' && selectedOrder && (
+        <OrderReceptionView
+          order={selectedOrder}
+          warehouse={selectedWarehouse}
+          activeContainers={activeContainers}
+          receptionState={receptionState}
+          packingPlan={activePackingPlan}
+          onSaveContainer={handleSaveContainer}
+          onSelectProduct={handleSelectProduct}
+          onGoToLiquidation={() => setViewMode('liquidation')}
+          onBack={() => setViewMode('orders_list')}
+        />
       )}
 
-      {/* 8. MODAL: Crear Nueva Orden de Importación Rápida */}
+      {/* VISTA 3: Vista de Recepción Individual del Producto */}
+      {viewMode === 'product_reception' && selectedOrder && selectedOrderDetail && (
+        <ProductReceptionView
+          order={selectedOrder}
+          warehouse={selectedWarehouse}
+          orderDetail={selectedOrderDetail}
+          receptionState={receptionState}
+          packingPlan={activePackingPlan}
+          onConfirmPallet={handleConfirmPallet}
+          onBack={() => setViewMode('order_reception')}
+        />
+      )}
+
+      {/* VISTA 4: Liquidación y Liberación de Códigos */}
+      {viewMode === 'liquidation' && selectedOrder && (
+        <ReceptionLiquidationView
+          order={selectedOrder}
+          warehouse={selectedWarehouse}
+          receptionState={receptionState}
+          packingPlan={activePackingPlan}
+          onConfirmLiquidation={handleConfirmLiquidation}
+          onBack={() => setViewMode('order_reception')}
+        />
+      )}
+
+      {/* MODAL 1: Nueva Orden Rápida de Importación */}
       {showOrderModal && (
         <div className="modal-backdrop" role="dialog" aria-modal="true">
           <div className="modal-card" style={{ maxWidth: '640px', width: '90%' }}>
@@ -2259,19 +647,15 @@ export function ReceptionsPage({ onBack, onNavigateToInventory, initialContainer
                 </button>
               </div>
 
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', marginTop: '16px' }}>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
                   <div>
-                    <label
-                      htmlFor="order-num"
-                      style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: 'var(--color-text-secondary)', marginBottom: '4px' }}
-                    >
+                    <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: 'var(--color-text-secondary)', marginBottom: '4px' }}>
                       Número de orden *
                     </label>
                     <input
-                      id="order-num"
                       type="text"
-                      placeholder="Ej: ORD-2026-002"
+                      placeholder="Ej: IMP-2026-005"
                       value={newOrderNumber}
                       onChange={(e) => setNewOrderNumber(e.target.value)}
                       required
@@ -2282,20 +666,15 @@ export function ReceptionsPage({ onBack, onNavigateToInventory, initialContainer
                         borderRadius: '6px',
                         background: 'var(--color-surface)',
                         color: 'var(--color-text-primary)',
-                        fontFamily: 'var(--font-body)',
-                        fontSize: '14px'
+                        fontSize: '13px'
                       }}
                     />
                   </div>
                   <div>
-                    <label
-                      htmlFor="order-supplier"
-                      style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: 'var(--color-text-secondary)', marginBottom: '4px' }}
-                    >
+                    <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: 'var(--color-text-secondary)', marginBottom: '4px' }}>
                       Proveedor
                     </label>
                     <select
-                      id="order-supplier"
                       value={newOrderSupplierId}
                       onChange={(e) => setNewOrderSupplierId(e.target.value)}
                       style={{
@@ -2305,8 +684,7 @@ export function ReceptionsPage({ onBack, onNavigateToInventory, initialContainer
                         borderRadius: '6px',
                         background: 'var(--color-surface)',
                         color: 'var(--color-text-primary)',
-                        fontFamily: 'var(--font-body)',
-                        fontSize: '14px'
+                        fontSize: '13px'
                       }}
                     >
                       <option value="">-- Proveedor genérico --</option>
@@ -2320,14 +698,10 @@ export function ReceptionsPage({ onBack, onNavigateToInventory, initialContainer
                 </div>
 
                 <div>
-                  <label
-                    htmlFor="order-container"
-                    style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: 'var(--color-text-secondary)', marginBottom: '4px' }}
-                  >
+                  <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: 'var(--color-text-secondary)', marginBottom: '4px' }}>
                     Tipo de contenedor
                   </label>
                   <select
-                    id="order-container"
                     value={newOrderContainer}
                     onChange={(e) => setNewOrderContainer(e.target.value as any)}
                     style={{
@@ -2337,99 +711,92 @@ export function ReceptionsPage({ onBack, onNavigateToInventory, initialContainer
                       borderRadius: '6px',
                       background: 'var(--color-surface)',
                       color: 'var(--color-text-primary)',
-                      fontFamily: 'var(--font-body)',
-                      fontSize: '14px'
+                      fontSize: '13px'
                     }}
                   >
-                    <option value="40FT">Contenedor 40 FT High Cube</option>
-                    <option value="20FT">Contenedor 20 FT Estándar</option>
-                    <option value="LCL">Carga consolidada LCL</option>
+                    <option value="40FT">40FT (Estándar marítimo - ~67 m³)</option>
+                    <option value="20FT">20FT (Contenedor corto - ~33 m³)</option>
+                    <option value="LCL">LCL (Carga suelta consolidada)</option>
                   </select>
                 </div>
 
-                {/* Agregar SKUs al pedido */}
-                <div style={{ borderTop: '1px solid var(--color-border)', paddingTop: '12px' }}>
-                  <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: 'var(--color-text-secondary)', marginBottom: '6px' }}>
-                    Productos de la orden
+                {/* Agregar Productos a la Orden */}
+                <div style={{ border: '1px solid var(--color-border)', borderRadius: '6px', padding: '12px', background: 'var(--color-canvas)' }}>
+                  <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: 'var(--color-text-primary)', marginBottom: '8px' }}>
+                    Productos de la orden ({newOrderItems.length})
                   </label>
-                  <div style={{ display: 'flex', gap: '10px' }}>
+                  <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                     <select
-                      style={{
-                        flex: 1,
-                        padding: '8px 12px',
-                        border: '1px solid var(--color-border)',
-                        borderRadius: '6px',
-                        background: 'var(--color-surface)',
-                        color: 'var(--color-text-primary)',
-                        fontFamily: 'var(--font-body)',
-                        fontSize: '14px'
-                      }}
                       value={tempAddProdId}
                       onChange={(e) => setTempAddProdId(e.target.value)}
+                      style={{ flex: 1, padding: '7px 10px', fontSize: '13px', borderRadius: '4px', border: '1px solid var(--color-border)' }}
                     >
-                      <option value="">-- Seleccionar SKU --</option>
+                      <option value="">-- Seleccionar producto --</option>
                       {products.map((p) => (
                         <option key={p.id_producto} value={p.id_producto}>
-                          {p.sku} — {p.nombre}
+                          {p.sku} - {p.nombre}
                         </option>
                       ))}
                     </select>
                     <input
                       type="number"
-                      min="1"
-                      style={{
-                        width: '110px',
-                        padding: '8px 12px',
-                        border: '1px solid var(--color-border)',
-                        borderRadius: '6px',
-                        background: 'var(--color-surface)',
-                        color: 'var(--color-text-primary)',
-                        fontFamily: 'var(--font-body)',
-                        fontSize: '14px'
-                      }}
+                      min={1}
+                      placeholder="Cantidad"
                       value={tempAddQty}
-                      onChange={(e) => setTempAddQty(Math.max(1, Number(e.target.value)))}
-                      placeholder="Cant."
+                      onChange={(e) => setTempAddQty(parseInt(e.target.value, 10) || 1)}
+                      style={{ width: '90px', padding: '7px 8px', fontSize: '13px', borderRadius: '4px', border: '1px solid var(--color-border)' }}
                     />
                     <button
                       type="button"
                       className="button secondary"
-                      onClick={handleAddOrderItem}
-                      disabled={!tempAddProdId}
+                      onClick={() => {
+                        if (!tempAddProdId) return
+                        const pId = Number(tempAddProdId)
+                        setNewOrderItems((prev) => {
+                          const existing = prev.find((item) => item.id_producto === pId)
+                          if (existing) {
+                            return prev.map((item) =>
+                              item.id_producto === pId
+                                ? { ...item, cantidad_pedida: item.cantidad_pedida + tempAddQty }
+                                : item
+                            )
+                          }
+                          return [...prev, { id_producto: pId, cantidad_pedida: tempAddQty }]
+                        })
+                        setTempAddProdId('')
+                        setTempAddQty(100)
+                      }}
                     >
-                      Agregar
+                      + Agregar
                     </button>
                   </div>
 
                   {newOrderItems.length > 0 && (
-                    <div style={{ marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                      {newOrderItems.map((item) => {
-                        const prod = products.find((p) => p.id_producto === item.id_producto)
+                    <div style={{ marginTop: '10px', maxHeight: '140px', overflowY: 'auto' }}>
+                      {newOrderItems.map((item, idx) => {
+                        const pInfo = products.find((p) => p.id_producto === item.id_producto)
                         return (
                           <div
-                            key={item.id_producto}
+                            key={idx}
                             style={{
                               display: 'flex',
                               justifyContent: 'space-between',
                               alignItems: 'center',
-                              padding: '8px 12px',
-                              backgroundColor: 'var(--color-canvas)',
-                              borderRadius: '6px',
-                              border: '1px solid var(--color-border)',
-                              fontSize: '13px'
+                              padding: '4px 8px',
+                              background: 'var(--color-surface)',
+                              borderRadius: '4px',
+                              fontSize: '12px',
+                              marginBottom: '4px',
+                              border: '1px solid var(--color-border)'
                             }}
                           >
                             <span>
-                              <strong style={{ color: 'var(--color-brand-deep)' }}>{prod?.sku}</strong> ({prod?.nombre}):{' '}
-                              <strong>{item.cantidad_pedida}</strong> unidades
+                              <strong>{pInfo?.sku || `SKU-${item.id_producto}`}</strong> · {pInfo?.nombre}: {item.cantidad_pedida} unid
                             </span>
                             <button
                               type="button"
-                              className="button secondary button-sm"
-                              style={{ color: 'var(--color-danger)', borderColor: 'rgba(179, 64, 42, 0.3)', padding: '2px 8px' }}
-                              onClick={() =>
-                                setNewOrderItems((prev) => prev.filter((i) => i.id_producto !== item.id_producto))
-                              }
+                              onClick={() => setNewOrderItems((prev) => prev.filter((_, i) => i !== idx))}
+                              style={{ background: 'none', border: 'none', color: 'var(--color-danger)', cursor: 'pointer', fontWeight: 700 }}
                             >
                               ✕
                             </button>
@@ -2441,20 +808,12 @@ export function ReceptionsPage({ onBack, onNavigateToInventory, initialContainer
                 </div>
               </div>
 
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '18px', paddingTop: '14px', borderTop: '1px solid var(--color-border)' }}>
-                <button
-                  type="button"
-                  className="button secondary"
-                  onClick={() => setShowOrderModal(false)}
-                >
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '20px' }}>
+                <button type="button" className="button secondary" onClick={() => setShowOrderModal(false)} disabled={creatingOrder}>
                   Cancelar
                 </button>
-                <button
-                  type="submit"
-                  className="button primary"
-                  disabled={creatingOrder || newOrderItems.length === 0}
-                >
-                  {creatingOrder ? 'Creando orden…' : 'Crear orden'}
+                <button type="submit" className="button primary" disabled={creatingOrder || newOrderItems.length === 0}>
+                  {creatingOrder ? 'Creando orden...' : 'Crear orden'}
                 </button>
               </div>
             </form>
@@ -2462,372 +821,68 @@ export function ReceptionsPage({ onBack, onNavigateToInventory, initialContainer
         </div>
       )}
 
-      {/* 8. MODAL: Plan de Paletizado y Rótulos de Muelle (Packing List) */}
+      {/* MODAL 2: Visor de Packing List y Rótulos */}
       {orderPackingModal && (
         <div className="modal-backdrop" role="dialog" aria-modal="true">
-          <div className="modal-card" style={{ maxWidth: '880px', width: '92%' }}>
+          <div className="modal-card" style={{ maxWidth: '820px', width: '92%', maxHeight: '90vh', display: 'flex', flexDirection: 'column' }}>
             <div className="modal-header">
               <div>
-                <span
-                  style={{
-                    fontSize: '12px',
-                    fontWeight: 600,
-                    color: 'var(--color-brand)',
-                    textTransform: 'uppercase',
-                    letterSpacing: '0.5px'
-                  }}
-                >
-                  Plan de Paletizado y Packing List
-                </span>
-                <h2
-                  className="modal-title"
-                  style={{ margin: '2px 0 0 0', fontSize: '20px', color: 'var(--color-brand-deep)' }}
-                >
-                  Packing List — Orden {orderPackingModal.numero_orden}
+                <h2 className="modal-title" style={{ margin: 0, fontSize: '18px', color: 'var(--color-brand-deep)' }}>
+                  Packing list oficial: {orderPackingModal.numero_orden}
                 </h2>
+                <span style={{ fontSize: '12px', color: 'var(--color-text-secondary)' }}>
+                  Proveedor: {orderPackingModal.proveedor} · Contenedor: {orderPackingModal.contenedor} · Total bultos: {orderPackingModal.total_bultos_previstos}
+                </span>
               </div>
-              <button
-                type="button"
-                className="modal-close-btn"
-                onClick={() => setOrderPackingModal(null)}
-              >
+              <button type="button" className="modal-close-btn" onClick={() => setOrderPackingModal(null)}>
                 ✕
               </button>
             </div>
 
-            <p className="muted" style={{ margin: '0 0 16px 0', fontSize: '13px' }}>
-              Desglose físico calculado según las reglas de empaque. Cada paleta cuenta con su código correlativo reservado con el prefijo <strong>{orderPackingModal.prefijo_almacen}</strong>, listo para descarga y etiquetado en muelle.
-            </p>
-
-            {/* Tira de Métricas del Contenedor */}
-            <div className="indicator-strip" style={{ marginBottom: '16px' }}>
-              <div className="indicator-card">
-                <span className="indicator-label">Unidades totales</span>
-                <span className="indicator-value">{orderPackingModal.total_unidades.toLocaleString('es-PE')}</span>
-                <span className="indicator-context">Contenedor {orderPackingModal.contenedor}</span>
-              </div>
-              <div className="indicator-card">
-                <span className="indicator-label">Cajas totales</span>
-                <span className="indicator-value">{orderPackingModal.total_cajas.toLocaleString('es-PE')}</span>
-                <span className="indicator-context">En todo el embarque</span>
-              </div>
-              <div className="indicator-card">
-                <span className="indicator-label">Paletas completas</span>
-                <span className="indicator-value" style={{ color: 'var(--color-brand)' }}>
-                  {orderPackingModal.total_paletas_completas}
-                </span>
-                <span className="indicator-context">Carga estándar homogénea</span>
-              </div>
-              <div className="indicator-card">
-                <span className="indicator-label">Cajas pucho / parciales</span>
-                <span className="indicator-value" style={{ color: orderPackingModal.total_puchos > 0 ? 'var(--color-warning)' : 'inherit' }}>
-                  {orderPackingModal.total_puchos}
-                </span>
-                <span className="indicator-context">
-                  {orderPackingModal.total_puchos > 0 ? 'Paleta con cajas sueltas' : 'Sin sobrantes sueltos'}
-                </span>
-              </div>
-              <div className="indicator-card">
-                <span className="indicator-label">Total bultos esperados</span>
-                <span className="indicator-value" style={{ color: 'var(--color-success)' }}>
-                  {orderPackingModal.total_bultos_previstos}
-                </span>
-                <span className="indicator-context">+5 tags reserva muelle</span>
-              </div>
-            </div>
-
-            {/* Pestañas de Vista: Resumen vs Lista Completa de Etiquetas */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', flexWrap: 'wrap', gap: '8px' }}>
-              <div style={{ display: 'flex', gap: '6px' }}>
-                <button
-                  type="button"
-                  className={`button ${orderPackingTab === 'summary' ? 'primary' : 'secondary'} button-sm`}
-                  onClick={() => setOrderPackingTab('summary')}
-                >
-                  Resumen por producto ({orderPackingModal.productos.length})
-                </button>
-                <button
-                  type="button"
-                  className={`button ${orderPackingTab === 'tags' ? 'primary' : 'secondary'} button-sm`}
-                  onClick={() => setOrderPackingTab('tags')}
-                >
-                  🏷️ Lista completa de códigos separados ({allOrderIndividualPallets.length})
-                </button>
-              </div>
-              {copiedPackingTag && (
-                <span style={{ fontSize: '12px', color: 'var(--color-success)', fontWeight: 600 }}>
-                  ✓ Código {copiedPackingTag} copiado al portapapeles
-                </span>
-              )}
-            </div>
-
-            {/* Vista 1: Resumen por Producto */}
-            {orderPackingTab === 'summary' && (
-              <div className="table-wrap" style={{ maxHeight: '300px', overflowY: 'auto', marginBottom: '14px' }}>
+            <div style={{ flex: 1, overflowY: 'auto', padding: '16px 0' }}>
+              <div className="table-wrap" style={{ margin: 0 }}>
                 <table>
                   <thead>
                     <tr>
+                      <th>#</th>
                       <th>SKU</th>
-                      <th>Producto</th>
-                      <th style={{ textAlign: 'right' }}>Cantidad</th>
-                      <th style={{ textAlign: 'right' }}>Unid/Caja</th>
-                      <th style={{ textAlign: 'right' }}>Cajas/Paleta</th>
-                      <th style={{ textAlign: 'center' }}>Paletas completas</th>
-                      <th style={{ textAlign: 'center' }}>Cajas pucho</th>
-                      <th>Códigos asignados</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {orderPackingModal.productos.map((prod) => {
-                      const completasTags = prod.paletas.filter((p) => p.tipo === 'COMPLETO').map((p) => p.uid_tag)
-                      const puchoTag = prod.paletas.find((p) => p.tipo === 'PUCHO')?.uid_tag
-
-                      return (
-                        <tr key={prod.id_producto}>
-                          <td>
-                            <code style={{ fontSize: '12px', fontWeight: 600, color: 'var(--color-brand-deep)' }}>
-                              {prod.sku}
-                            </code>
-                          </td>
-                          <td>
-                            <strong style={{ color: 'var(--color-text-primary)' }}>{prod.nombre}</strong>
-                          </td>
-                          <td style={{ textAlign: 'right', fontWeight: 600 }}>
-                            {prod.cantidad_pedida.toLocaleString('es-PE')}
-                          </td>
-                          <td style={{ textAlign: 'right' }}>{prod.unidades_por_caja}</td>
-                          <td style={{ textAlign: 'right' }}>{prod.cajas_por_paleta}</td>
-                          <td style={{ textAlign: 'center' }}>
-                            <span
-                              style={{
-                                background: 'var(--color-brand-soft)',
-                                color: 'var(--color-brand-deep)',
-                                padding: '2px 8px',
-                                borderRadius: '4px',
-                                fontWeight: 600,
-                                fontSize: '12px'
-                              }}
-                            >
-                              {prod.paletas_completas} paleta(s)
-                            </span>
-                          </td>
-                          <td style={{ textAlign: 'center' }}>
-                            {prod.cajas_pucho > 0 ? (
-                              <span
-                                style={{
-                                  background: '#FFF8EE',
-                                  color: 'var(--color-warning)',
-                                  border: '1px solid #F5D399',
-                                  padding: '2px 8px',
-                                  borderRadius: '4px',
-                                  fontWeight: 600,
-                                  fontSize: '12px'
-                                }}
-                              >
-                                {prod.cajas_pucho} caja(s)
-                              </span>
-                            ) : (
-                              <span className="muted" style={{ fontSize: '12px' }}>0</span>
-                            )}
-                          </td>
-                          <td>
-                            <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap', maxHeight: '70px', overflowY: 'auto' }}>
-                              {completasTags.map((t) => (
-                                <code
-                                  key={t}
-                                  onClick={() => handleCopyPackingTag(t)}
-                                  style={{
-                                    background: 'var(--color-canvas)',
-                                    border: '1px solid var(--color-border)',
-                                    padding: '1px 5px',
-                                    borderRadius: '3px',
-                                    fontSize: '11px',
-                                    fontWeight: 600,
-                                    cursor: 'pointer'
-                                  }}
-                                  title="Clic para copiar código"
-                                >
-                                  {t}
-                                </code>
-                              ))}
-                              {puchoTag && (
-                                <code
-                                  key={puchoTag}
-                                  onClick={() => handleCopyPackingTag(puchoTag)}
-                                  style={{
-                                    background: '#FFF8EE',
-                                    border: '1px solid #F5D399',
-                                    color: 'var(--color-warning)',
-                                    padding: '1px 5px',
-                                    borderRadius: '3px',
-                                    fontSize: '11px',
-                                    fontWeight: 600,
-                                    cursor: 'pointer'
-                                  }}
-                                  title="Código reservado para paleta pucho (Clic para copiar)"
-                                >
-                                  {puchoTag} (P)
-                                </code>
-                              )}
-                            </div>
-                          </td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
-
-            {/* Vista 2: Lista Detallada de Códigos y Paletas Separadas */}
-            {orderPackingTab === 'tags' && (
-              <div className="table-wrap" style={{ maxHeight: '320px', overflowY: 'auto', marginBottom: '14px' }}>
-                <table>
-                  <thead>
-                    <tr>
-                      <th style={{ width: '40px', textAlign: 'center' }}>#</th>
-                      <th>Código / Tag RFID</th>
-                      <th>Tipo de paleta</th>
-                      <th>SKU</th>
-                      <th>Producto</th>
+                      <th>Descripción</th>
+                      <th style={{ textAlign: 'right' }}>Unid. pedidas</th>
                       <th style={{ textAlign: 'right' }}>Cajas</th>
-                      <th style={{ textAlign: 'right' }}>Unidades</th>
-                      <th style={{ textAlign: 'center', width: '90px' }}>Acción</th>
+                      <th style={{ textAlign: 'right' }}>Paletas compl.</th>
+                      <th style={{ textAlign: 'right' }}>Pucho</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {allOrderIndividualPallets.map((item) => (
-                      <tr key={item.uid_tag + '-' + item.correlativo}>
-                        <td style={{ textAlign: 'center', color: 'var(--color-text-secondary)', fontSize: '12px' }}>
-                          {item.correlativo}
-                        </td>
+                    {orderPackingModal.productos.map((p, idx) => (
+                      <tr key={idx}>
+                        <td>{idx + 1}</td>
                         <td>
-                          <code
-                            style={{
-                              fontSize: '12px',
-                              fontWeight: 700,
-                              color: item.tipo === 'PUCHO' ? 'var(--color-warning)' : item.tipo === 'RESERVA_EXCEDENTE' ? 'var(--color-text-secondary)' : 'var(--color-brand)',
-                              background: item.tipo === 'PUCHO' ? '#FFF8EE' : item.tipo === 'RESERVA_EXCEDENTE' ? 'var(--color-canvas)' : 'var(--color-brand-soft)',
-                              padding: '2px 6px',
-                              borderRadius: '4px',
-                              border: item.tipo === 'RESERVA_EXCEDENTE' ? '1px dashed var(--color-border)' : '1px solid transparent'
-                            }}
-                          >
-                            {item.uid_tag}
-                          </code>
+                          <strong>{p.sku}</strong>
                         </td>
-                        <td>
-                          {item.tipo === 'COMPLETO' && (
-                            <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--color-brand-deep)' }}>
-                              Paleta estándar completa
-                            </span>
-                          )}
-                          {item.tipo === 'PUCHO' && (
-                            <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--color-warning)' }}>
-                              Pucho (Cajas sueltas)
-                            </span>
-                          )}
-                          {item.tipo === 'RESERVA_EXCEDENTE' && (
-                            <span style={{ fontSize: '12px', fontWeight: 500, color: 'var(--color-text-secondary)' }}>
-                              Reserva muelle (Excedente)
-                            </span>
-                          )}
-                        </td>
-                        <td>
-                          <code style={{ fontSize: '11px', color: 'var(--color-brand-deep)' }}>{item.sku}</code>
-                        </td>
-                        <td>
-                          <span style={{ fontSize: '13px', fontWeight: 500, color: 'var(--color-text-primary)' }}>
-                            {item.nombre}
-                          </span>
-                        </td>
-                        <td style={{ textAlign: 'right', fontWeight: 600 }}>
-                          {item.cajas > 0 ? item.cajas.toLocaleString('es-PE') : '—'}
-                        </td>
-                        <td style={{ textAlign: 'right', fontWeight: 600 }}>
-                          {item.unidades > 0 ? item.unidades.toLocaleString('es-PE') : '—'}
-                        </td>
-                        <td style={{ textAlign: 'center' }}>
-                          <button
-                            type="button"
-                            className="button secondary button-sm"
-                            style={{ padding: '2px 8px', fontSize: '11px' }}
-                            onClick={() => handleCopyPackingTag(item.uid_tag)}
-                          >
-                            {copiedPackingTag === item.uid_tag ? '✓ Copiado' : 'Copiar'}
-                          </button>
-                        </td>
+                        <td>{p.nombre}</td>
+                        <td style={{ textAlign: 'right', fontFamily: 'monospace' }}>{p.cantidad_pedida.toLocaleString('es-PE')}</td>
+                        <td style={{ textAlign: 'right', fontFamily: 'monospace' }}>{p.cajas_totales}</td>
+                        <td style={{ textAlign: 'right', fontFamily: 'monospace' }}>{p.paletas_completas}</td>
+                        <td style={{ textAlign: 'right', fontFamily: 'monospace' }}>{p.cajas_pucho > 0 ? `${p.cajas_pucho} cajas` : '-'}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
-            )}
-
-            {/* Banner de Códigos de Contingencia para Excedentes */}
-            <div
-              style={{
-                backgroundColor: 'var(--color-canvas)',
-                border: '1px solid var(--color-border)',
-                borderRadius: '6px',
-                padding: '12px 16px',
-                marginBottom: '16px',
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                flexWrap: 'wrap',
-                gap: '10px'
-              }}
-            >
-              <div>
-                <strong style={{ fontSize: '13px', color: 'var(--color-brand-deep)' }}>
-                  Etiquetas de contingencia / reserva para excedentes:
-                </strong>
-                <p className="muted" style={{ margin: '2px 0 0 0', fontSize: '12px' }}>
-                  Si el contenedor trae paletas o cajas adicionales no contempladas, utiliza estos códigos pre-impresos para registrar el excedente sin detener la descarga.
-                </p>
-              </div>
-              <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-                {orderPackingModal.etiquetas_reserva.map((r) => (
-                  <code
-                    key={r.uid_tag}
-                    style={{
-                      background: 'var(--color-surface)',
-                      border: '1px dashed var(--color-border)',
-                      padding: '2px 6px',
-                      borderRadius: '4px',
-                      fontSize: '11px',
-                      fontWeight: 600,
-                      color: 'var(--color-brand)'
-                    }}
-                  >
-                    {r.uid_tag}
-                  </code>
-                ))}
-              </div>
             </div>
 
-            {/* Acciones del Modal */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
-              <span className="muted" style={{ fontSize: '12px' }}>
-                El archivo descargable contiene 2 hojas: Resumen técnico y Rótulos con casillas de verificación para el operario.
-              </span>
-              <div style={{ display: 'flex', gap: '10px' }}>
-                <button
-                  type="button"
-                  className="button secondary"
-                  onClick={() => setOrderPackingModal(null)}
-                >
-                  Cerrar
-                </button>
-                <button
-                  type="button"
-                  className="button primary"
-                  onClick={() => packingListService.exportPackingListToExcel(orderPackingModal)}
-                >
-                  Descargar Excel para muelle (.xlsx)
-                </button>
-              </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: '16px', borderTop: '1px solid var(--color-border)' }}>
+              <button
+                type="button"
+                className="button secondary"
+                onClick={() => packingListService.exportPackingListToExcel(orderPackingModal)}
+              >
+                Descargar Excel con rótulos (.xlsx)
+              </button>
+              <button type="button" className="button primary" onClick={() => setOrderPackingModal(null)}>
+                Cerrar
+              </button>
             </div>
           </div>
         </div>

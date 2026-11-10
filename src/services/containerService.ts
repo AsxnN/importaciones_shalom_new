@@ -136,7 +136,10 @@ function getLocalContainers(): ContainerRecord[] {
     if (raw) {
       const parsed = JSON.parse(raw)
       if (Array.isArray(parsed) && parsed.length > 0) {
-        return parsed
+        return parsed.map((c: any) => ({
+          ...c,
+          fotos: Array.isArray(c?.fotos) ? c.fotos : []
+        }))
       }
     }
   } catch (err) {
@@ -218,7 +221,7 @@ export const containerService = {
       return { success: false, error: 'La placa del camión es obligatoria.' }
     }
 
-    const fotosLimitadas = (payload.fotos || []).slice(0, 10)
+    const fotosIniciales = payload.fotos || []
     const horaLlegada = payload.hora_llegada_contenedor || new Date().toISOString()
 
     const newRecord: ContainerRecord = {
@@ -235,8 +238,9 @@ export const containerService = {
       num_estibadores: payload.num_estibadores || 0,
       hora_llegada_cuadrilla: payload.hora_llegada_cuadrilla || null,
       hora_salida_cuadrilla: null,
-      fotos: fotosLimitadas,
+      fotos: fotosIniciales,
       estado: 'EN_PATIO',
+      rampa: payload.rampa?.trim() || '',
       observaciones: payload.observaciones?.trim() || '',
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString()
@@ -316,7 +320,7 @@ export const containerService = {
     if (!item) return { success: false, error: 'Contenedor no encontrado.' }
 
     const updatedFotos = [...item.fotos]
-    if (foto && updatedFotos.length < 10) {
+    if (foto) {
       updatedFotos.push(foto)
     }
 
@@ -334,7 +338,7 @@ export const containerService = {
     if (!item) return { success: false, error: 'Contenedor no encontrado.' }
 
     const updatedFotos = [...item.fotos]
-    if (foto && updatedFotos.length < 10) {
+    if (foto) {
       updatedFotos.push(foto)
     }
 
@@ -352,7 +356,7 @@ export const containerService = {
     if (!item) return { success: false, error: 'Contenedor no encontrado.' }
 
     const updatedFotos = [...item.fotos]
-    if (foto && updatedFotos.length < 10) {
+    if (foto) {
       updatedFotos.push(foto)
     }
 
@@ -363,21 +367,27 @@ export const containerService = {
     })
   },
 
-  // 8. Agregar foto individual (hasta máx 10 fotos)
+  // 8. Agregar foto individual
   async addPhoto(id_contenedor: number, photo: ContainerPhoto): Promise<{ success: boolean; error?: string }> {
     const local = getLocalContainers()
     const item = local.find((c) => c.id_contenedor === id_contenedor)
     if (!item) return { success: false, error: 'Contenedor no encontrado.' }
 
-    if (item.fotos.length >= 10) {
-      return { success: false, error: 'Se ha alcanzado el límite máximo permitido de 10 fotos por contenedor.' }
-    }
-
     const updatedFotos = [...item.fotos, photo]
     return this.updateContainer(id_contenedor, { fotos: updatedFotos })
   },
 
-  // 9. Eliminar contenedor
+  // 9. Eliminar foto individual
+  async removePhoto(id_contenedor: number, photoId: string): Promise<{ success: boolean; error?: string }> {
+    const local = getLocalContainers()
+    const item = local.find((c) => c.id_contenedor === id_contenedor)
+    if (!item) return { success: false, error: 'Contenedor no encontrado.' }
+
+    const updatedFotos = item.fotos.filter((f) => f.id !== photoId)
+    return this.updateContainer(id_contenedor, { fotos: updatedFotos })
+  },
+
+  // 10. Eliminar contenedor
   async deleteContainer(id_contenedor: number): Promise<{ success: boolean; error?: string }> {
     try {
       await supabase.from('control_contenedor').delete().eq('id_contenedor', id_contenedor)

@@ -1,10 +1,15 @@
 export type ContainerPhotoType =
   | 'LLEGADA_CAMION'
+  | 'PLACA_CAMION'
   | 'PRECINTO'
   | 'APERTURA_PUERTAS'
   | 'GUIA_REMISION'
+  | 'CONTENEDOR_VACIO'
+  | 'INCIDENCIA'
+  | 'CUADRILLA_ENTRADA'
   | 'CUADRILLA_LLEGADA'
   | 'CUADRILLA_SALIDA'
+  | 'PERSONAL_PROPIO'
   | 'SALIDA_CAMION'
   | 'OTRO'
 
@@ -36,6 +41,7 @@ export interface ContainerRecord {
   hora_salida_cuadrilla?: string | null
   fotos: ContainerPhoto[]
   estado: ContainerStatus
+  rampa?: string
   observaciones?: string
   created_at?: string
   updated_at?: string
@@ -48,11 +54,12 @@ export interface NewContainerPayload {
   nombre_conductor?: string
   telefono_conductor?: string
   hora_llegada_contenedor?: string
-  tipo_personal: CrewType
+  tipo_personal?: CrewType
   nombre_cuadrilla?: string
   num_estibadores?: number
   hora_llegada_cuadrilla?: string | null
   fotos?: ContainerPhoto[]
+  rampa?: string
   observaciones?: string
 }
 
@@ -71,5 +78,6 @@ export interface UpdateContainerPayload {
   hora_salida_cuadrilla?: string | null
   fotos?: ContainerPhoto[]
   estado?: ContainerStatus
+  rampa?: string
   observaciones?: string
 }

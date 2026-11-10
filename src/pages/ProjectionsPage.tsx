@@ -182,7 +182,7 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
         const { data: prods, error: prodsErr } = await supabase
           .from('producto')
           .select('id_producto, sku, nombre')
-          .eq('activo', true)
+          .or('activo.is.null,activo.eq.true')
           .order('nombre', { ascending: true })
 
         if (prodsErr) {
@@ -754,7 +754,7 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
     }
 
     setSuccessMsg(
-      `Consumos y salidas hacia agencias importados con éxito desde Excel. Se configuraron los meses ${detectedMonths.join(', ')} y el promedio se recalculó reactivamente.`
+      `Consumos y salidas hacia agencias importados con éxito. Se incorporaron ${updatedItems.length} productos registrados en Maestros y Empaque para los meses ${detectedMonths.join(', ')}.`
     )
   }
 
@@ -792,7 +792,7 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
       const { data: prods, error: prodsErr } = await supabase
         .from('producto')
         .select('id_producto, sku, nombre')
-        .eq('activo', true)
+        .or('activo.is.null,activo.eq.true')
         .order('nombre', { ascending: true })
 
       if (!prodsErr && prods && Array.isArray(prods)) {
@@ -807,6 +807,12 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
     } catch {
       // Ignorar silenciosamente
     }
+  }
+
+  // Abrir modal de importación de Excel con catálogo maestro fresco
+  const handleOpenExcelModal = async () => {
+    await loadCatalogProductsFromDB()
+    setExcelModalOpen(true)
   }
 
   // Coincidencias en catálogo de base de datos para búsqueda y botón Añadir
@@ -1840,7 +1846,7 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
               <button
                 type="button"
                 className="button secondary"
-                onClick={() => setExcelModalOpen(true)}
+                onClick={handleOpenExcelModal}
                 title="Cargar archivo Excel con salidas y consumos mensuales hacia agencias"
                 style={{ fontWeight: 600, borderColor: 'var(--color-brand)', color: 'var(--color-brand)' }}
               >
@@ -2089,7 +2095,7 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
             <button
               type="button"
               className="button secondary"
-              onClick={() => setExcelModalOpen(true)}
+              onClick={handleOpenExcelModal}
               style={{ fontWeight: 600, color: 'var(--color-brand)', borderColor: 'var(--color-brand)' }}
             >
               Cargar salidas de Excel
@@ -3125,8 +3131,20 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
                     <p style={{ margin: 0, fontSize: '13px', maxWidth: '480px', lineHeight: '1.4' }}>
                       {searchTerm.trim()
                         ? 'Puedes añadir este producto a la proyección directamente con el botón "+ Añadir" en el buscador superior.'
-                        : 'Para comenzar la proyección, busca un producto en el buscador superior y presiona "Añadir", o haz clic en "Cargar salidas desde Excel" para importar consumos mensuales.'}
+                        : 'Para comenzar la proyección, busca un producto en el buscador superior y presiona "Añadir", o haz clic en "Cargar salidas de Excel" para importar consumos mensuales.'}
                     </p>
+                    {!searchTerm.trim() && !isOrderLocked && (
+                      <div style={{ marginTop: '8px' }}>
+                        <button
+                          type="button"
+                          className="button primary"
+                          onClick={handleOpenExcelModal}
+                          style={{ fontSize: '13px', padding: '8px 16px', fontWeight: 600 }}
+                        >
+                          Cargar salidas de Excel
+                        </button>
+                      </div>
+                    )}
                   </div>
                 </td>
               </tr>
@@ -4932,15 +4950,16 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
       )}
 
       {/* Modal de Importación de Consumos Mensuales desde Excel */}
-
-      {/* Modal de Importación de Consumos Mensuales desde Excel */}
-      <ExcelImportModal
-        isOpen={excelModalOpen}
-        onClose={() => setExcelModalOpen(false)}
-        template={activeTemplate}
-        items={items}
-        onApply={handleApplyExcelOutputs}
-      />
+      {excelModalOpen && (
+        <ExcelImportModal
+          isOpen={excelModalOpen}
+          onClose={() => setExcelModalOpen(false)}
+          template={activeTemplate}
+          items={items}
+          catalogProducts={catalogProducts}
+          onApply={handleApplyExcelOutputs}
+        />
+      )}
     </div>
   )
 }

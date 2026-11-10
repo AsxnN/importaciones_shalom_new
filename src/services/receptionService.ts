@@ -157,6 +157,8 @@ export const receptionService = {
               id_producto,
               sku,
               nombre,
+              clasificacion_abc,
+              peso_unitario_kg,
               regla_empaque (
                 unidades_por_caja,
                 cajas_por_camada,
@@ -215,6 +217,8 @@ export const receptionService = {
                     id_producto: det.producto.id_producto,
                     sku: det.producto.sku,
                     nombre: det.producto.nombre,
+                    clasificacion_abc: det.producto.clasificacion_abc || null,
+                    peso_unitario_kg: det.producto.peso_unitario_kg || null,
                     regla_empaque: rawRegla
                       ? {
                           ...rawRegla,

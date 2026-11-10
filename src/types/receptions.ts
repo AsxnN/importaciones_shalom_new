@@ -98,6 +98,8 @@ export interface ImportOrderDetail {
     id_producto: number
     sku: string
     nombre: string
+    clasificacion_abc?: string | null
+    peso_unitario_kg?: number | null
     regla_empaque?: {
       unidades_por_caja: number
       cajas_por_camada?: number | null
@@ -122,4 +124,30 @@ export interface ConciliationResult {
   paquetes_puchos: number
   tags_procesados: number
   mensaje?: string
+}
+
+export interface ReceivedPalletLog {
+  uid_tag: string
+  id_producto: number
+  sku: string
+  tipo: 'COMPLETO' | 'PUCHO' | 'RESERVA_EXCEDENTE'
+  cajas: number
+  unidades: number
+  id_contenedor?: number | null
+  numero_contenedor?: string
+  fecha_hora: string
+  estado: 'EN_ALMACEN'
+}
+
+export interface OrderReceptionState {
+  id_contenedor_seleccionado?: number | null
+  numero_contenedor_seleccionado?: string
+  placa_camion_seleccionado?: string
+  contenedor_confirmado: boolean
+  paletas_recibidas: ReceivedPalletLog[]
+  codigos_liberados?: string[]
+  estado_recepcion: 'PENDIENTE' | 'EN_CURSO' | 'LIQUIDADA'
+  dictamen?: 'COMPLETA' | 'FALTANTES' | 'SOBRANTES'
+  observaciones_liquidacion?: string
+  fecha_liquidacion?: string
 }

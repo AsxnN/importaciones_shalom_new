@@ -2,7 +2,7 @@ import { useEffect, useState, useMemo } from 'react'
 import { containerService } from '../services/containerService'
 import type { ContainerRecord, NewContainerPayload } from '../types/containers'
 import { NewContainerModal } from './containers/NewContainerModal'
-import { ContainerDetailModal } from './containers/ContainerDetailModal'
+import { ContainerDetailView } from './containers/ContainerDetailView'
 
 interface Props {
   onBack: () => void
@@ -107,6 +107,34 @@ export function ContainersPage({ onBack, onOpenReceptions }: Props) {
     if (!startStr || !endStr) return null
     const diffMs = Math.max(0, new Date(endStr).getTime() - new Date(startStr).getTime())
     return (diffMs / (1000 * 60 * 60)).toFixed(2)
+  }
+
+  // Vista Completa: Ficha del Contenedor
+  if (selectedContainer) {
+    return (
+      <ContainerDetailView
+        container={selectedContainer}
+        onBack={() => {
+          setSelectedContainer(null)
+          loadContainers()
+        }}
+        onUpdated={async () => {
+          await loadContainers()
+          const list = await containerService.getContainers('ALL')
+          const updated = list.find((c) => c.id_contenedor === selectedContainer.id_contenedor)
+          if (updated) {
+            setSelectedContainer({
+              ...updated,
+              fotos: Array.isArray(updated.fotos) ? updated.fotos : []
+            })
+          }
+        }}
+        onOpenReceptions={(id) => {
+          setSelectedContainer(null)
+          onOpenReceptions?.(id)
+        }}
+      />
+    )
   }
 
   return (
@@ -292,7 +320,7 @@ export function ContainersPage({ onBack, onOpenReceptions }: Props) {
                   <tr
                     key={c.id_contenedor}
                     style={{ borderBottom: '1px solid var(--color-border)', cursor: 'pointer' }}
-                    onClick={() => setSelectedContainer(c)}
+                    onClick={() => setSelectedContainer({ ...c, fotos: Array.isArray(c.fotos) ? c.fotos : [] })}
                   >
                     <td style={{ padding: '12px' }}>
                       <strong style={{ display: 'block', fontSize: '14px', color: 'var(--color-text-primary)' }}>
@@ -364,10 +392,10 @@ export function ContainersPage({ onBack, onOpenReceptions }: Props) {
                           borderRadius: '4px',
                           background: 'var(--color-canvas)',
                           border: '1px solid var(--color-border)',
-                          color: c.fotos.length > 0 ? 'var(--color-text-primary)' : 'var(--color-text-secondary)'
+                          color: (c.fotos || []).length > 0 ? 'var(--color-text-primary)' : 'var(--color-text-secondary)'
                         }}
                       >
-                        {c.fotos.length} / 10 fotos
+                        {(c.fotos || []).length} fotos
                       </span>
                     </td>
 
@@ -404,7 +432,7 @@ export function ContainersPage({ onBack, onOpenReceptions }: Props) {
                       <div style={{ display: 'inline-flex', gap: '6px' }}>
                         <button
                           type="button"
-                          onClick={() => setSelectedContainer(c)}
+                          onClick={() => setSelectedContainer({ ...c, fotos: Array.isArray(c.fotos) ? c.fotos : [] })}
                           style={{
                             padding: '4px 10px',
                             background: 'var(--color-surface)',
@@ -451,26 +479,6 @@ export function ContainersPage({ onBack, onOpenReceptions }: Props) {
         isOpen={showNewModal}
         onClose={() => setShowNewModal(false)}
         onSave={handleCreateContainer}
-      />
-
-      {/* Modal Detalle Contenedor */}
-      <ContainerDetailModal
-        container={selectedContainer}
-        isOpen={!!selectedContainer}
-        onClose={() => setSelectedContainer(null)}
-        onUpdated={() => {
-          loadContainers()
-          if (selectedContainer) {
-            containerService.getContainers('ALL').then((list) => {
-              const updated = list.find((c) => c.id_contenedor === selectedContainer.id_contenedor)
-              setSelectedContainer(updated || null)
-            })
-          }
-        }}
-        onOpenReceptions={(id) => {
-          setSelectedContainer(null)
-          onOpenReceptions?.(id)
-        }}
       />
     </div>
   )

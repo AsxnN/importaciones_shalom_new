@@ -38,6 +38,7 @@ export interface ProjectionItem {
   id_item: number
   id_plantilla: number
   id_producto: number | null
+  sku?: string
   nombre_producto: string
   datos_meses: Record<string, number>
   promedio_manual: number | null
@@ -51,6 +52,7 @@ export interface CalculatedProjectionRow {
   id_item: number
   id_plantilla: number
   id_producto: number | null
+  sku?: string
   nombre_producto: string
   datos_meses: Record<string, number>
   meses_incluidos_promedio: string[]
@@ -197,12 +199,31 @@ export interface ProjectionOrder {
   snapshot_proyeccion?: ProjectionOrderSnapshot | null
 }
 
+export interface ExcelMatchedProduct {
+  id_producto: number
+  sku: string
+  nombre_producto: string
+  nombre_en_excel: string
+  valoresMeses: Record<string, number>
+  totalSalidas: number
+}
+
+export interface ExcelUnmatchedProduct {
+  nombre_en_excel: string
+  valoresMeses: Record<string, number>
+  totalSalidas: number
+}
+
 export interface ExcelImportResult {
   fileName: string
   detectedMonths: string[]
   matchedCount: number
+  unmatchedCount: number
+  totalExcelProducts: number
   totalExcelRows: number
   unmatchedProducts: string[]
+  productosPoseo: ExcelMatchedProduct[]
+  productosNoPoseo: ExcelUnmatchedProduct[]
   previewRows: Array<{
     producto: string
     valoresMeses: Record<string, number>

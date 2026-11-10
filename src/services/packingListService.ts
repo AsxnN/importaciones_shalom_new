@@ -11,6 +11,7 @@ export interface PalletTagItem {
   cajas: number
   unidades: number
   notas?: string
+  liberado?: boolean
 }
 
 export interface ProductPackingSummary {
@@ -76,6 +77,7 @@ export function getReservedTagsFromAllOrders(cleanPrefix: string, excludeOrderNu
     if (!plan) return
     if (Array.isArray(plan.etiquetas_bultos)) {
       for (const item of plan.etiquetas_bultos) {
+        if (item?.liberado) continue
         if (item?.uid_tag && item.uid_tag.startsWith(prefixUpper)) {
           const numStr = item.uid_tag.slice(prefixUpper.length).replace(/\D/g, '')
           if (numStr) reserved.add(parseInt(numStr, 10))
@@ -84,6 +86,7 @@ export function getReservedTagsFromAllOrders(cleanPrefix: string, excludeOrderNu
     }
     if (Array.isArray(plan.etiquetas_reserva)) {
       for (const item of plan.etiquetas_reserva) {
+        if (item?.liberado) continue
         if (item?.uid_tag && item.uid_tag.startsWith(prefixUpper)) {
           const numStr = item.uid_tag.slice(prefixUpper.length).replace(/\D/g, '')
           if (numStr) reserved.add(parseInt(numStr, 10))
@@ -402,6 +405,44 @@ export const packingListService = {
     await this.savePackingPlanToOrder(order.numero_orden, finalPlan)
 
     return finalPlan
+  },
+
+  // 3.1. Liberar formalmente códigos no utilizados en el plan
+  liberateCodesInPlan(plan: OrderPackingPlan, codigosALiberar: string[]): OrderPackingPlan {
+    const toFreeSet = new Set(codigosALiberar.map((c) => c.trim().toUpperCase()))
+    const updated: OrderPackingPlan = { ...plan }
+
+    if (Array.isArray(updated.etiquetas_bultos)) {
+      updated.etiquetas_bultos = updated.etiquetas_bultos.map((item) => {
+        if (toFreeSet.has(item.uid_tag.trim().toUpperCase())) {
+          return { ...item, liberado: true, notas: 'LIBERADO_EN_LIQUIDACION' }
+        }
+        return item
+      })
+    }
+
+    if (Array.isArray(updated.etiquetas_reserva)) {
+      updated.etiquetas_reserva = updated.etiquetas_reserva.map((item) => {
+        if (toFreeSet.has(item.uid_tag.trim().toUpperCase())) {
+          return { ...item, liberado: true, notas: 'LIBERADO_EN_LIQUIDACION' }
+        }
+        return item
+      })
+    }
+
+    if (Array.isArray(updated.productos)) {
+      updated.productos = updated.productos.map((prod) => ({
+        ...prod,
+        paletas: prod.paletas.map((p) => {
+          if (toFreeSet.has(p.uid_tag.trim().toUpperCase())) {
+            return { ...p, liberado: true, notas: 'LIBERADO_EN_LIQUIDACION' }
+          }
+          return p
+        })
+      }))
+    }
+
+    return updated
   },
 
   // 4. Exportar a archivo Excel descargable (.xlsx)

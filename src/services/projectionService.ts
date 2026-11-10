@@ -1452,7 +1452,8 @@ export const projectionService = {
   async parseMonthlyOutputsExcel(
     file: File,
     template: ProjectionTemplate,
-    existingItems: ProjectionItem[]
+    existingItems: ProjectionItem[],
+    masterCatalog?: Array<{ id_producto?: number | null; sku?: string; nombre: string }>
   ): Promise<{
     success: boolean
     error?: string
@@ -1496,6 +1497,39 @@ export const projectionService = {
 
       const MONTH_NAMES = ['ENE', 'FEB', 'MAR', 'ABR', 'MAY', 'JUN', 'JUL', 'AGO', 'SET', 'OCT', 'NOV', 'DIC']
 
+      // Cargar catálogo maestro de productos de Maestros y Empaque (public.producto)
+      let catalog: Array<{ id_producto: number; sku: string; nombre: string }> = []
+      if (masterCatalog && masterCatalog.length > 0) {
+        catalog = masterCatalog
+          .filter((p) => p.id_producto && p.nombre)
+          .map((p) => ({
+            id_producto: Number(p.id_producto),
+            sku: p.sku || '',
+            nombre: p.nombre
+          }))
+      }
+
+      try {
+        const { data: dbProds, error: dbErr } = await supabase
+          .from('producto')
+          .select('id_producto, sku, nombre')
+          .or('activo.is.null,activo.eq.true')
+        if (!dbErr && dbProds && Array.isArray(dbProds) && dbProds.length > 0) {
+          const existingIds = new Set(catalog.map((c) => c.id_producto))
+          for (const p of dbProds) {
+            if (!existingIds.has(Number(p.id_producto))) {
+              catalog.push({
+                id_producto: Number(p.id_producto),
+                sku: p.sku || '',
+                nombre: p.nombre
+              })
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('Error al consultar catálogo maestro en parseMonthlyOutputsExcel:', e)
+      }
+
       // Función de parseo de fechas robusta (Excel serial, dd/mm/yyyy, yyyy-mm-dd)
       const parseExcelDate = (val: any): Date | null => {
         if (typeof val === 'number') {
@@ -1522,6 +1556,7 @@ export const projectionService = {
       let headerRowIndex = 0
       let dateColIdx = -1
       let productColIdx = -1
+      let articleNameColIdx = -1
       let qtyColIdx = -1
       let detectedDirectMonths: Array<{ key: string; colIdx: number }> = []
 
@@ -1535,19 +1570,32 @@ export const projectionService = {
 
           if (str.includes('FECHA') || str === 'DATE' || str.includes('F.DESPACHO') || str.includes('F.SALIDA')) {
             dateColIdx = idx
+          } else if (str.includes('NOMBRE') && (str.includes('ARTICULO') || str.includes('ÁRTICULO') || str.includes('PRODUCTO'))) {
+            articleNameColIdx = idx
+          } else if (str === 'PRODUCTO' || str === 'ITEM' || str.includes('SKU') || str.includes('CODIGO') || str.includes('COD_PROD')) {
+            if (productColIdx < 0) productColIdx = idx
           } else if (
             str.includes('PROD') ||
-            str.includes('SKU') ||
             str.includes('DESCRIP') ||
             str.includes('MATERIAL') ||
             str.includes('SUMINISTRO')
           ) {
-            productColIdx = idx
-          } else if (
-            str.includes('CANT') ||
+            if (productColIdx < 0) productColIdx = idx
+          }
+
+          // Detección de columna de cantidad (priorizar salidas efectivas y descartar unidades de medida)
+          if (
+            str.includes('CANT. ENVIADA') ||
+            str.includes('CANT ENVIADA') ||
+            str.includes('CANT. SALIDA') ||
+            str.includes('CANTIDAD SALIDA') ||
             str.includes('SALIDA') ||
-            str.includes('UNID') ||
             str.includes('ENTREGA')
+          ) {
+            qtyColIdx = idx
+          } else if (
+            qtyColIdx < 0 &&
+            (str.includes('CANT') || (str.includes('UNID') && !str.includes('MEDIDA') && !str.includes('MEDIA') && !str.includes('ALMACEN')))
           ) {
             qtyColIdx = idx
           }
@@ -1562,46 +1610,69 @@ export const projectionService = {
         })
 
         // Si encontramos Fecha + Producto + Cantidad, es formato transaccional por fecha
-        if (dateColIdx >= 0 && productColIdx >= 0) {
+        if (dateColIdx >= 0 && (productColIdx >= 0 || articleNameColIdx >= 0)) {
           headerRowIndex = r
           break
         }
 
         // Si encontramos Producto + al menos 2 meses directos, es formato matricial
-        if (productColIdx >= 0 && detectedDirectMonths.length >= 2) {
+        if ((productColIdx >= 0 || articleNameColIdx >= 0) && detectedDirectMonths.length >= 2) {
           headerRowIndex = r
           break
         }
       }
 
-      // Base limpia de items existentes
-      const updatedItems = existingItems.map((item) => ({
-        ...item,
-        datos_meses: {} as Record<string, number>
-      }))
+      if (productColIdx < 0 && articleNameColIdx >= 0) {
+        productColIdx = articleNameColIdx
+      }
 
-      let matchedCount = 0
-      const unmatchedProducts: string[] = []
-      const previewRows: Array<{
-        producto: string
-        valoresMeses: Record<string, number>
-        coincide: boolean
-      }> = []
+      const productMonthTotals: Record<string, Record<string, number>> = {}
+      const rawProductDisplayNames: Record<string, string> = {}
+      const rawProductArticleNames: Record<string, string> = {}
       let chronologicalMonths: string[] = []
+
+      // =========================================================================
+      // COINCIDENCIA ESTRICTA CONTRA CATÁLOGO MAESTRO (Maestros y Empaque)
+      // =========================================================================
+      const findInMasterCatalog = (prodStr: any, articleStr?: any) => {
+        const s1 = typeof prodStr === 'string' ? prodStr.trim() : ''
+        const s2 = typeof articleStr === 'string' ? articleStr.trim() : ''
+        const n1 = normalizeKey(s1)
+        const n2 = normalizeKey(s2)
+
+        // 1. Coincidencia exacta por SKU
+        if (n1) {
+          const bySku1 = catalog.find((p) => p.sku && normalizeKey(p.sku) === n1)
+          if (bySku1) return bySku1
+        }
+        if (n2) {
+          const bySku2 = catalog.find((p) => p.sku && normalizeKey(p.sku) === n2)
+          if (bySku2) return bySku2
+        }
+
+        // 2. Coincidencia exacta por Nombre de Producto en Catálogo
+        if (n2) {
+          const byName2 = catalog.find((p) => normalizeKey(p.nombre) === n2)
+          if (byName2) return byName2
+        }
+        if (n1) {
+          const byName1 = catalog.find((p) => normalizeKey(p.nombre) === n1)
+          if (byName1) return byName1
+        }
+
+        return null
+      }
 
       // =========================================================================
       // CASO A: FORMATO TRANSACCIONAL DE SALIDAS (Columna Fecha + Producto + Cantidad)
       // =========================================================================
       if (dateColIdx >= 0 && productColIdx >= 0) {
-        // Si no se detectó columna explícita de cantidad, buscar columna numérica a la derecha
         if (qtyColIdx < 0) {
-          qtyColIdx = productColIdx + 1
+          qtyColIdx = Math.max(productColIdx, articleNameColIdx) + 1
         }
 
-        const productMonthTotals: Record<string, Record<string, number>> = {}
         const detectedMonthsSet = new Set<string>()
         const monthSortOrder: Record<string, number> = {}
-        const rawProductNameMap: Record<string, string> = {}
 
         for (let r = headerRowIndex + 1; r < rawRows.length; r++) {
           const row = rawRows[r]
@@ -1618,9 +1689,17 @@ export const projectionService = {
           detectedMonthsSet.add(mKey)
 
           const rawProd = row[productColIdx]
-          if (!rawProd || typeof rawProd !== 'string' || !rawProd.trim()) continue
-          const cleanProd = normalizeKey(rawProd)
-          rawProductNameMap[cleanProd] = rawProd.trim()
+          const rawArtic = articleNameColIdx >= 0 ? row[articleNameColIdx] : ''
+          const prodText = typeof rawProd === 'string' ? rawProd.trim() : (rawProd ? String(rawProd).trim() : '')
+          const articText = typeof rawArtic === 'string' ? rawArtic.trim() : (rawArtic ? String(rawArtic).trim() : '')
+          if (!prodText && !articText) continue
+
+          // Clave única compuesta para acumulación
+          const itemKey = normalizeKey(articText || prodText)
+          if (!itemKey) continue
+
+          rawProductDisplayNames[itemKey] = articText || prodText
+          rawProductArticleNames[itemKey] = prodText
 
           const rawQty = row[qtyColIdx]
           let numQty = 0
@@ -1631,10 +1710,10 @@ export const projectionService = {
             if (!isNaN(parsed)) numQty = Math.abs(parsed)
           }
 
-          if (!productMonthTotals[cleanProd]) {
-            productMonthTotals[cleanProd] = {}
+          if (!productMonthTotals[itemKey]) {
+            productMonthTotals[itemKey] = {}
           }
-          productMonthTotals[cleanProd][mKey] = (productMonthTotals[cleanProd][mKey] || 0) + numQty
+          productMonthTotals[itemKey][mKey] = (productMonthTotals[itemKey][mKey] || 0) + numQty
         }
 
         chronologicalMonths = Array.from(detectedMonthsSet).sort(
@@ -1648,85 +1727,6 @@ export const projectionService = {
               'Se detectó la columna Fecha pero no se pudieron interpretar las fechas del archivo. Usa formato dd/mm/aaaa o aaaa-mm-dd.'
           }
         }
-
-        // Cruzar con los productos del catálogo
-        const processedExcelKeys = new Set<string>()
-
-        for (const targetItem of updatedItems) {
-          const itemKey = normalizeKey(targetItem.nombre_producto)
-          // Buscar coincidencia exacta o inclusiva
-          let matchedExcelKey = Object.keys(productMonthTotals).find(
-            (k) => k === itemKey || k.includes(itemKey) || itemKey.includes(k)
-          )
-
-          if (matchedExcelKey && productMonthTotals[matchedExcelKey]) {
-            matchedCount++
-            processedExcelKeys.add(matchedExcelKey)
-            const monthMap = productMonthTotals[matchedExcelKey]
-            const filledMonths: Record<string, number> = {}
-
-            chronologicalMonths.forEach((m) => {
-              const val = monthMap[m] || 0
-              filledMonths[m] = -Math.abs(Math.round(val))
-            })
-
-            targetItem.datos_meses = filledMonths
-
-            if (previewRows.length < 12) {
-              previewRows.push({
-                producto: targetItem.nombre_producto,
-                valoresMeses: filledMonths,
-                coincide: true
-              })
-            }
-          } else {
-            // Producto no vino en el Excel de salidas
-            const zeroMonths: Record<string, number> = {}
-            chronologicalMonths.forEach((m) => {
-              zeroMonths[m] = 0
-            })
-            targetItem.datos_meses = zeroMonths
-          }
-        }
-
-        // Incorporar a la matriz productos del Excel que no estaban previamente
-        Object.keys(productMonthTotals).forEach((k) => {
-          if (!processedExcelKeys.has(k)) {
-            const rawName = (rawProductNameMap[k] || k).toUpperCase()
-            const monthMap = productMonthTotals[k]
-            const filledMonths: Record<string, number> = {}
-
-            chronologicalMonths.forEach((m) => {
-              const val = monthMap[m] || 0
-              filledMonths[m] = -Math.abs(Math.round(val))
-            })
-
-            const newItem: ProjectionItem = {
-              id_item: Date.now() + Math.floor(Math.random() * 100000) + updatedItems.length,
-              id_plantilla: template.id_plantilla,
-              id_producto: null,
-              nombre_producto: rawName,
-              datos_meses: filledMonths,
-              promedio_manual: null,
-              stock_manual: 0,
-              stock_redondeado_manual: null,
-              orden_fila: updatedItems.length + 1,
-              activo: true
-            }
-
-            updatedItems.push(newItem)
-            matchedCount++
-            processedExcelKeys.add(k)
-
-            if (previewRows.length < 15) {
-              previewRows.push({
-                producto: newItem.nombre_producto,
-                valoresMeses: filledMonths,
-                coincide: true
-              })
-            }
-          }
-        })
       }
       // =========================================================================
       // CASO B: FORMATO MATRICIAL DE SALIDAS (Columnas directas de meses JUN, JUL, etc.)
@@ -1739,63 +1739,32 @@ export const projectionService = {
           if (!row || !Array.isArray(row)) continue
 
           const rawProdName = row[productColIdx]
-          if (!rawProdName || typeof rawProdName !== 'string' || !rawProdName.trim()) continue
-          const cleanName = normalizeKey(rawProdName)
+          const rawArticName = articleNameColIdx >= 0 ? row[articleNameColIdx] : ''
+          const prodText = typeof rawProdName === 'string' ? rawProdName.trim() : (rawProdName ? String(rawProdName).trim() : '')
+          const articText = typeof rawArticName === 'string' ? rawArticName.trim() : (rawArticName ? String(rawArticName).trim() : '')
+          if (!prodText && !articText) continue
 
-          const monthVals: Record<string, number> = {}
+          const itemKey = normalizeKey(articText || prodText)
+          if (!itemKey) continue
+
+          rawProductDisplayNames[itemKey] = articText || prodText
+          rawProductArticleNames[itemKey] = prodText
+
+          if (!productMonthTotals[itemKey]) {
+            productMonthTotals[itemKey] = {}
+          }
+
           detectedDirectMonths.forEach((m) => {
             const rawVal = row[m.colIdx]
+            let numQty = 0
             if (typeof rawVal === 'number' && !isNaN(rawVal)) {
-              monthVals[m.key] = -Math.abs(Math.round(rawVal))
+              numQty = Math.abs(rawVal)
             } else if (rawVal !== undefined && rawVal !== null && String(rawVal).trim() !== '') {
               const parsed = parseFloat(String(rawVal).replace(/,/g, ''))
-              if (!isNaN(parsed)) {
-                monthVals[m.key] = -Math.abs(Math.round(parsed))
-              }
-            } else {
-              monthVals[m.key] = 0
+              if (!isNaN(parsed)) numQty = Math.abs(parsed)
             }
+            productMonthTotals[itemKey][m.key] = (productMonthTotals[itemKey][m.key] || 0) + numQty
           })
-
-          const targetItem = updatedItems.find((it) => {
-            const itClean = normalizeKey(it.nombre_producto)
-            return itClean === cleanName || itClean.includes(cleanName) || cleanName.includes(itClean)
-          })
-
-          if (targetItem) {
-            matchedCount++
-            targetItem.datos_meses = monthVals
-            if (previewRows.length < 15) {
-              previewRows.push({
-                producto: targetItem.nombre_producto,
-                valoresMeses: monthVals,
-                coincide: true
-              })
-            }
-          } else {
-            // Incorporar nuevo producto desde la matriz de Excel
-            const newItem: ProjectionItem = {
-              id_item: Date.now() + Math.floor(Math.random() * 100000) + updatedItems.length + r,
-              id_plantilla: template.id_plantilla,
-              id_producto: null,
-              nombre_producto: rawProdName.trim().toUpperCase(),
-              datos_meses: monthVals,
-              promedio_manual: null,
-              stock_manual: 0,
-              stock_redondeado_manual: null,
-              orden_fila: updatedItems.length + 1,
-              activo: true
-            }
-            updatedItems.push(newItem)
-            matchedCount++
-            if (previewRows.length < 15) {
-              previewRows.push({
-                producto: newItem.nombre_producto,
-                valoresMeses: monthVals,
-                coincide: true
-              })
-            }
-          }
         }
       } else {
         return {
@@ -1805,14 +1774,206 @@ export const projectionService = {
         }
       }
 
+      // Agrupación por Productos que Poseo (en catálogo) vs Productos No Registrados
+      const productosPoseoMap: Record<
+        number,
+        {
+          id_producto: number
+          sku: string
+          nombre_producto: string
+          nombresEnExcel: Set<string>
+          valoresMeses: Record<string, number>
+          totalSalidas: number
+        }
+      > = {}
+
+      const productosNoPoseoMap: Record<
+        string,
+        {
+          nombre_en_excel: string
+          valoresMeses: Record<string, number>
+          totalSalidas: number
+        }
+      > = {}
+
+      Object.keys(productMonthTotals).forEach((k) => {
+        const rawName = rawProductDisplayNames[k] || k
+        const articleText = rawProductArticleNames[k] || ''
+        const monthMap = productMonthTotals[k]
+        let itemTotal = 0
+        const filledMonths: Record<string, number> = {}
+
+        chronologicalMonths.forEach((m) => {
+          const val = monthMap[m] || 0
+          filledMonths[m] = -Math.abs(Math.round(val))
+          itemTotal += Math.abs(Math.round(val))
+        })
+
+        // Cruce estricto y único contra Maestros y Empaque
+        const matchedMaster = findInMasterCatalog(rawName, articleText)
+
+        if (matchedMaster) {
+          // PRODUCTO QUE POSEO (Registrado en Maestros y Empaque)
+          if (!productosPoseoMap[matchedMaster.id_producto]) {
+            productosPoseoMap[matchedMaster.id_producto] = {
+              id_producto: matchedMaster.id_producto,
+              sku: matchedMaster.sku || '',
+              nombre_producto: matchedMaster.nombre,
+              nombresEnExcel: new Set([rawName]),
+              valoresMeses: { ...filledMonths },
+              totalSalidas: itemTotal
+            }
+          } else {
+            // Acumular salidas de múltiples líneas del Excel mapeadas al mismo producto del maestro
+            const entry = productosPoseoMap[matchedMaster.id_producto]
+            entry.nombresEnExcel.add(rawName)
+            entry.totalSalidas += itemTotal
+            chronologicalMonths.forEach((m) => {
+              entry.valoresMeses[m] = (entry.valoresMeses[m] || 0) + (filledMonths[m] || 0)
+            })
+          }
+        } else {
+          // PRODUCTO QUE NO POSEO (No registrado en Maestros y Empaque: ¡OMITIDO DE LA TABLA!)
+          if (!productosNoPoseoMap[k]) {
+            productosNoPoseoMap[k] = {
+              nombre_en_excel: rawName,
+              valoresMeses: { ...filledMonths },
+              totalSalidas: itemTotal
+            }
+          } else {
+            const entry = productosNoPoseoMap[k]
+            entry.totalSalidas += itemTotal
+            chronologicalMonths.forEach((m) => {
+              entry.valoresMeses[m] = (entry.valoresMeses[m] || 0) + (filledMonths[m] || 0)
+            })
+          }
+        }
+      })
+
+      // Convertir a listas ordenadas
+      const productosPoseoList = Object.values(productosPoseoMap)
+        .map((p) => ({
+          id_producto: p.id_producto,
+          sku: p.sku,
+          nombre_producto: p.nombre_producto,
+          nombre_en_excel: Array.from(p.nombresEnExcel).join(' / '),
+          valoresMeses: p.valoresMeses,
+          totalSalidas: p.totalSalidas
+        }))
+        .sort((a, b) => a.nombre_producto.localeCompare(b.nombre_producto))
+
+      const productosNoPoseoList = Object.values(productosNoPoseoMap)
+        .map((p) => ({
+          nombre_en_excel: p.nombre_en_excel,
+          valoresMeses: p.valoresMeses,
+          totalSalidas: p.totalSalidas
+        }))
+        .sort((a, b) => a.nombre_en_excel.localeCompare(b.nombre_en_excel))
+
+      // =========================================================================
+      // CONSTRUCCIÓN ESTRICTA DE updatedItems
+      // REGLA CRÍTICA: SOLO SE CARGAN A LA TABLA LOS PRODUCTOS QUE POSEO (EN CATÁLOGO MAESTRO).
+      // LOS PRODUCTOS NO REGISTRADOS Y CUALQUIER ÍTEM HUÉRFANO PREVIO SE EXCLUYEN TOTALMENTE.
+      // =========================================================================
+      const updatedItems: ProjectionItem[] = []
+      const processedMasterIds = new Set<number>()
+
+      // 1. Si un producto ya estaba en la matriz de la orden Y existe válidamente en el catálogo maestro
+      for (const targetItem of existingItems) {
+        // Verificar existencia en catálogo maestro
+        const inCatalog = targetItem.id_producto
+          ? catalog.find((c) => c.id_producto === targetItem.id_producto)
+          : catalog.find((c) => normalizeKey(c.nombre) === normalizeKey(targetItem.nombre_producto))
+
+        if (!inCatalog) {
+          // Si el ítem previo en la tabla NO pertenece al catálogo maestro, SE PURGA Y SE ELIMINA DE LA TABLA
+          continue
+        }
+
+        const masterId = inCatalog.id_producto
+        processedMasterIds.add(masterId)
+
+        const matchedPoseo = productosPoseoMap[masterId]
+        if (matchedPoseo) {
+          updatedItems.push({
+            ...targetItem,
+            id_producto: masterId,
+            sku: inCatalog.sku || targetItem.sku || matchedPoseo.sku,
+            nombre_producto: inCatalog.nombre,
+            datos_meses: { ...matchedPoseo.valoresMeses }
+          })
+        } else {
+          // Producto registrado en Maestros y Empaque pero que no tuvo salidas en este Excel
+          const zeroMonths: Record<string, number> = {}
+          chronologicalMonths.forEach((m) => {
+            zeroMonths[m] = 0
+          })
+          updatedItems.push({
+            ...targetItem,
+            id_producto: masterId,
+            sku: inCatalog.sku || targetItem.sku,
+            nombre_producto: inCatalog.nombre,
+            datos_meses: zeroMonths
+          })
+        }
+      }
+
+      // 2. Incorporar a la matriz los productos que poseo que aún no estaban en la matriz
+      for (const poseo of productosPoseoList) {
+        if (!processedMasterIds.has(poseo.id_producto)) {
+          processedMasterIds.add(poseo.id_producto)
+          const newItem: ProjectionItem = {
+            id_item: Date.now() + Math.floor(Math.random() * 100000) + updatedItems.length,
+            id_plantilla: template.id_plantilla,
+            id_producto: poseo.id_producto,
+            sku: poseo.sku,
+            nombre_producto: poseo.nombre_producto,
+            datos_meses: { ...poseo.valoresMeses },
+            promedio_manual: null,
+            stock_manual: 0,
+            stock_redondeado_manual: null,
+            orden_fila: updatedItems.length + 1,
+            activo: true
+          }
+          updatedItems.push(newItem)
+        }
+      }
+
+      // Preview de filas combinadas
+      const previewRows: Array<{
+        producto: string
+        valoresMeses: Record<string, number>
+        coincide: boolean
+      }> = []
+
+      productosPoseoList.slice(0, 15).forEach((p) => {
+        previewRows.push({
+          producto: p.nombre_producto,
+          valoresMeses: p.valoresMeses,
+          coincide: true
+        })
+      })
+
+      productosNoPoseoList.slice(0, 10).forEach((p) => {
+        previewRows.push({
+          producto: p.nombre_en_excel,
+          valoresMeses: p.valoresMeses,
+          coincide: false
+        })
+      })
+
       return {
         success: true,
         result: {
           fileName: file.name,
           detectedMonths: chronologicalMonths,
-          matchedCount,
+          matchedCount: productosPoseoList.length,
+          unmatchedCount: productosNoPoseoList.length,
+          totalExcelProducts: productosPoseoList.length + productosNoPoseoList.length,
           totalExcelRows: rawRows.length - (headerRowIndex + 1),
-          unmatchedProducts: Array.from(new Set(unmatchedProducts)),
+          unmatchedProducts: productosNoPoseoList.map((p) => p.nombre_en_excel),
+          productosPoseo: productosPoseoList,
+          productosNoPoseo: productosNoPoseoList,
           previewRows
         },
         updatedItems

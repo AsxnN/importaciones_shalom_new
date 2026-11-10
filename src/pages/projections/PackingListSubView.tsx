@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { OrderPackingPlan, PuchoConsolidationItem } from '../../services/packingListService'
 import { packingListService } from '../../services/packingListService'
+import { PalletStickerModal, type PalletStickerData } from '../../components/PalletStickerModal'
 
 interface PackingListSubViewProps {
   plan: OrderPackingPlan
@@ -19,6 +20,7 @@ export function PackingListSubView({
   const [palletSearch, setPalletSearch] = useState('')
   const [palletTypeFilter, setPalletTypeFilter] = useState<'TODOS' | 'COMPLETO' | 'PUCHO' | 'RESERVA_EXCEDENTE'>('TODOS')
   const [verifiedTags, setVerifiedTags] = useState<Set<string>>(new Set())
+  const [selectedSticker, setSelectedSticker] = useState<PalletStickerData | null>(null)
 
   // Consolidaciones de puchos detectadas contra el inventario físico en almacén
   const [puchoConsolidations, setPuchoConsolidations] = useState<PuchoConsolidationItem[]>([])
@@ -130,6 +132,32 @@ export function PackingListSubView({
     navigator.clipboard.writeText(allCodes)
     setCopiedAll(true)
     setTimeout(() => setCopiedAll(false), 2500)
+  }
+
+  // Abrir vista previa e impresión de sticker térmico
+  const handleOpenSticker = (item: (typeof allPallets)[0]) => {
+    const whLabel =
+      plan.prefijo_almacen === 'IMP'
+        ? 'ALMACÉN IMPORTACIONES'
+        : plan.prefijo_almacen === 'STO'
+        ? 'ALMACÉN STORE'
+        : `ALMACÉN [${plan.prefijo_almacen}]`
+
+    setSelectedSticker({
+      almacenNombre: whLabel,
+      empresa: 'SHALOM',
+      tagRfid: item.uid_tag,
+      ordenNumero: plan.numero_orden,
+      sku: item.sku,
+      productoNombre: item.nombre,
+      cajas: item.cajas,
+      unidades: item.unidades,
+      cajasPorCamada: null,
+      camadas: null,
+      pesoTotalKg: null,
+      pareto: 'CLASE B',
+      fecha: plan.fecha_emision
+    })
   }
 
   // Marcar / desmarcar verificación de paleta
@@ -878,7 +906,7 @@ export function PackingListSubView({
                   <th style={{ padding: '10px 8px', textAlign: 'right' }}>Cajas</th>
                   <th style={{ padding: '10px 10px', textAlign: 'right' }}>Unidades</th>
                   <th style={{ padding: '10px 12px', minWidth: '120px' }}>Nivel de estiba</th>
-                  <th style={{ padding: '10px 8px', textAlign: 'center', width: '80px' }}>Copiar</th>
+                  <th style={{ padding: '10px 8px', textAlign: 'center', width: '130px' }}>Acciones</th>
                 </tr>
               </thead>
               <tbody>
@@ -1000,14 +1028,26 @@ export function PackingListSubView({
                           )}
                         </td>
                         <td style={{ padding: '8px 8px', textAlign: 'center' }}>
-                          <button
-                            type="button"
-                            className="button secondary button-sm no-print"
-                            style={{ padding: '2px 8px', fontSize: '11px' }}
-                            onClick={() => handleCopyTag(item.uid_tag)}
-                          >
-                            {copiedTag === item.uid_tag ? 'Copiado' : 'Copiar'}
-                          </button>
+                          <div style={{ display: 'flex', gap: '4px', justifyContent: 'center' }}>
+                            <button
+                              type="button"
+                              className="button secondary button-sm no-print"
+                              style={{ padding: '2px 8px', fontSize: '11px' }}
+                              onClick={() => handleCopyTag(item.uid_tag)}
+                              title="Copiar código al portapapeles"
+                            >
+                              {copiedTag === item.uid_tag ? 'Copiado' : 'Copiar'}
+                            </button>
+                            <button
+                              type="button"
+                              className="button secondary button-sm no-print"
+                              style={{ padding: '2px 8px', fontSize: '11px', fontWeight: 600 }}
+                              onClick={() => handleOpenSticker(item)}
+                              title="Ver e imprimir etiqueta térmica de esta paleta"
+                            >
+                              Sticker
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     )
@@ -1066,6 +1106,13 @@ export function PackingListSubView({
           ))}
         </div>
       </div>
+
+      {/* Modal de Etiqueta Térmica de Paleta */}
+      <PalletStickerModal
+        isOpen={!!selectedSticker}
+        onClose={() => setSelectedSticker(null)}
+        data={selectedSticker}
+      />
     </div>
   )
 }
