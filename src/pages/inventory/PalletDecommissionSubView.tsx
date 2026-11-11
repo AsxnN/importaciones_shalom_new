@@ -142,33 +142,96 @@ export function PalletDecommissionSubView({
         </div>
       )}
 
-      {/* Tira de Métricas de Paletas */}
-      <div className="inventory-metric-strip">
-        <div className="metric-box">
-          <span className="metric-label">Paletas activas</span>
-          <span className="metric-value">{metrics.total}</span>
-          <span className="metric-subtext">En esta sede</span>
+      {/* Tira Densa de Indicadores (Efferd 2 / skill_design.md) */}
+      <div className="indicator-strip" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '14px' }}>
+        <div className="indicator-card">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span className="indicator-label">Paletas activas</span>
+            <span
+              style={{
+                fontSize: '11px',
+                fontWeight: 700,
+                padding: '2px 7px',
+                borderRadius: '12px',
+                background: 'var(--color-brand-soft)',
+                color: 'var(--color-brand)',
+                border: '1px solid var(--color-border)'
+              }}
+            >
+              En sede
+            </span>
+          </div>
+          <div className="indicator-value">{metrics.total}</div>
+          <span className="indicator-context">Total con chip RFID en {warehouseName}</span>
         </div>
-        <div className="metric-box">
-          <span className="metric-label">En racks Drive-In</span>
-          <span className="metric-value" style={{ color: 'var(--color-brand)' }}>
+
+        <div className="indicator-card">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span className="indicator-label">En racks Drive-In</span>
+            <span
+              style={{
+                fontSize: '11px',
+                fontWeight: 700,
+                padding: '2px 7px',
+                borderRadius: '12px',
+                background: 'var(--color-brand-soft)',
+                color: 'var(--color-brand)',
+                border: '1px solid var(--color-border)'
+              }}
+            >
+              Estibadas
+            </span>
+          </div>
+          <div className="indicator-value" style={{ color: 'var(--color-brand)' }}>
             {metrics.enRacks}
-          </span>
-          <span className="metric-subtext">En celdas de túnel</span>
+          </div>
+          <span className="indicator-context">En celdas de túnel asignadas</span>
         </div>
-        <div className="metric-box">
-          <span className="metric-label">En zona de campo</span>
-          <span className="metric-value" style={{ color: 'var(--color-warning)' }}>
+
+        <div className="indicator-card">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span className="indicator-label">En zona de campo</span>
+            <span
+              style={{
+                fontSize: '11px',
+                fontWeight: 700,
+                padding: '2px 7px',
+                borderRadius: '12px',
+                background: 'rgba(188, 121, 31, 0.1)',
+                color: 'var(--color-warning)',
+                border: '1px solid rgba(188, 121, 31, 0.28)'
+              }}
+            >
+              Piso libre
+            </span>
+          </div>
+          <div className="indicator-value" style={{ color: 'var(--color-warning)' }}>
             {metrics.enCampo}
-          </span>
-          <span className="metric-subtext">Piso libre / sobredimensión</span>
+          </div>
+          <span className="indicator-context">Piso de almacén / sobredimensión</span>
         </div>
-        <div className="metric-box">
-          <span className="metric-label">Sin celda asignada</span>
-          <span className="metric-value" style={{ color: 'var(--color-text-secondary)' }}>
+
+        <div className="indicator-card">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span className="indicator-label">Sin celda asignada</span>
+            <span
+              style={{
+                fontSize: '11px',
+                fontWeight: 700,
+                padding: '2px 7px',
+                borderRadius: '12px',
+                background: 'var(--color-canvas)',
+                color: 'var(--color-text-secondary)',
+                border: '1px solid var(--color-border)'
+              }}
+            >
+              Por ubicar
+            </span>
+          </div>
+          <div className="indicator-value" style={{ color: 'var(--color-text-secondary)' }}>
             {metrics.sinCelda}
-          </span>
-          <span className="metric-subtext">Pendientes de ubicar</span>
+          </div>
+          <span className="indicator-context">Pendientes de asignación física</span>
         </div>
       </div>
 
@@ -177,20 +240,19 @@ export function PalletDecommissionSubView({
         style={{
           display: 'flex',
           alignItems: 'center',
-          gap: '14px',
-          padding: '14px 18px',
+          gap: '12px',
+          padding: '12px 16px',
           borderRadius: '8px',
           backgroundColor: 'var(--color-brand-soft)',
           border: '1px solid var(--color-border)'
         }}
       >
-        <span style={{ fontSize: '20px' }}>ℹ️</span>
         <div style={{ flex: 1 }}>
-          <strong style={{ fontSize: '14px', color: 'var(--color-brand-deep)' }}>
-            Movimientos y salidas fuera de la empresa
+          <strong style={{ fontSize: '13.5px', color: 'var(--color-brand-deep)' }}>
+            Transferencias y movimientos entre sedes
           </strong>
           <p style={{ margin: '2px 0 0', fontSize: '13px', color: 'var(--color-text-secondary)' }}>
-            Para transferir paletas hacia otra sede o realizar despachos definitivos (venta a clientes o bajas de paleta), ingresa al <strong>Módulo 03: Movimientos y Transferencias</strong>.
+            Para transferir paletas hacia otra sede o realizar despachos definitivos (salidas por venta o bajas), ingresa a <strong>Movimientos y Transferencias</strong>.
           </p>
         </div>
       </div>
@@ -278,13 +340,13 @@ export function PalletDecommissionSubView({
           <div style={{ display: 'flex', alignItems: 'center' }}>
             <button
               type="button"
-              className="action-button secondary"
+              className="btn-detail"
               onClick={() => {
                 setSearchQuery('')
                 setSelectedSkuFilter('')
                 setSelectedLocationType('ALL')
               }}
-              style={{ fontSize: '12px', padding: '6px 12px' }}
+              style={{ fontSize: '12.5px', padding: '6px 12px' }}
             >
               Limpiar filtros
             </button>
@@ -380,9 +442,9 @@ export function PalletDecommissionSubView({
                       {p.id_celda ? (
                         <button
                           type="button"
-                          className="action-button secondary"
+                          className="btn-detail"
                           onClick={() => handleUnassignCell(p.id_etiqueta, p.codigo_ubicacion || 'Ubicación', p.id_celda || undefined)}
-                          style={{ padding: '4px 8px', fontSize: '12px' }}
+                          style={{ padding: '4px 10px', fontSize: '12px' }}
                           title="Liberar casilla física del rack (la paleta permanece en almacén)"
                         >
                           Liberar celda

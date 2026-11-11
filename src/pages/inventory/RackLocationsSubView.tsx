@@ -1300,7 +1300,7 @@ export function RackLocationsSubView({ warehouseId, warehouseName, products }: P
               </div>
 
               <div style={{ fontSize: '12px', color: 'var(--color-text-secondary)', backgroundColor: 'var(--color-brand-soft)', padding: '8px 12px', borderRadius: '4px' }}>
-                💡 <strong>Total a generar:</strong>{' '}
+                <strong>Total a generar:</strong>{' '}
                 {modalLevels.reduce((acc, curr) => acc + curr.capacidad_paletas, 0)} celdas individuales con códigos tipo{' '}
                 <code>{modalLaneCode || 'C01'}-N01-P01</code>.
               </div>
@@ -1407,7 +1407,7 @@ export function RackLocationsSubView({ warehouseId, warehouseName, products }: P
                         >
                           {p.producto?.sku} · Tag: {p.uid_tag} ({p.cantidad_paquetes} bultos)
                           {isRestrictedForRack
-                            ? ' — ⛔ Exclusivo Zona Campo (Serializado)'
+                            ? ' — [Exclusivo Zona Campo - Serializado]'
                             : modo === 'SERIALIZADO'
                             ? ' — (Serializado unitario)'
                             : ' — (Paletizado estándar)'}
@@ -1440,7 +1440,7 @@ export function RackLocationsSubView({ warehouseId, warehouseName, products }: P
                           >
                             {p.sku} — {p.nombre}
                             {isRestrictedForRack
-                              ? ' [⛔ Solo Zona Campo - Maquinaria]'
+                              ? ' [Solo Zona Campo - Maquinaria]'
                               : isSerial
                               ? ' [Serializado unitario]'
                               : ' [Paletizado estándar]'}
@@ -1508,13 +1508,13 @@ export function RackLocationsSubView({ warehouseId, warehouseName, products }: P
                   }}
                 >
                   <strong style={{ display: 'block', marginBottom: '4px' }}>
-                    ⛔ Restricción Operativa: Ubicación No Permitida
+                    Restricción operativa: ubicación no permitida
                   </strong>
                   <span>
                     El producto seleccionado pertenece al modo <strong>Serializado unitario</strong> (maquinaria o equipos sobredimensionados) y está restringido a <strong>Zona Campo</strong>. No puede alojarse en celdas de altura en el rack Drive-In.
                   </span>
                   <div style={{ marginTop: '8px', fontSize: '12px', color: 'var(--color-text-secondary)' }}>
-                    💡 <em>Regla de asignación:</em> Los productos de <strong>Paletizado estándar</strong> pueden alojarse tanto en celdas de rack como en Zona Campo. Las unidades serializadas exclusivas de campo solo pueden ubicarse en la <strong>Zona Campo</strong>.
+                    <em>Regla de asignación:</em> Los productos de <strong>Paletizado estándar</strong> pueden alojarse tanto en celdas de rack como en Zona Campo. Las unidades serializadas exclusivas de campo solo pueden ubicarse en la <strong>Zona Campo</strong>.
                   </div>
                 </div>
               )}
@@ -1531,7 +1531,7 @@ export function RackLocationsSubView({ warehouseId, warehouseName, products }: P
                     fontSize: '12.5px'
                   }}
                 >
-                  📍 <strong>Zona Campo (Piso libre):</strong> Admite tanto maquinaria serializada sobredimensionada como paletas de estiba estándar.
+                  <strong>Zona Campo (Piso libre):</strong> Admite tanto maquinaria serializada sobredimensionada como paletas de estiba estándar.
                 </div>
               )}
 

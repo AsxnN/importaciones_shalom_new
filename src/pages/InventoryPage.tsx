@@ -5,6 +5,7 @@ import { locationService } from '../services/locationService'
 import type { PalletRecord } from '../types/locations'
 import { PalletDecommissionSubView } from './inventory/PalletDecommissionSubView'
 import { RackLocationsSubView } from './inventory/RackLocationsSubView'
+import { WarehouseSelectorBar } from './inventory/WarehouseSelectorBar'
 import { productoRepository } from './products/repositories/ProductRepository'
 import { unidadSerializadaRepository } from './products/repositories/SerialUnitRepository'
 import type { EstadoUnidadSerial, ModoManejoCodigo, Product, UnidadSerializada } from './products/types'
@@ -148,6 +149,19 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
   const [activePallets, setActivePallets] = useState<PalletRecord[]>([])
   const [palletCountsMap, setPalletCountsMap] = useState<Map<number, PalletCountSummary>>(new Map())
   const [systemAlerts, setSystemAlerts] = useState<SystemAlert[]>([])
+
+  // Filtros interactivos para tabla de existencias (Efferd 2)
+  const [stockSearch, setStockSearch] = useState('')
+  const [stockCategoryFilter, setStockCategoryFilter] = useState('')
+  const [stockStatusFilter, setStockStatusFilter] = useState<'ALL' | 'VERDE' | 'AMARILLO' | 'ROJO'>('ALL')
+
+  // Filtros interactivos para movimientos
+  const [movementSearch, setMovementSearch] = useState('')
+  const [movementTypeFilter, setMovementTypeFilter] = useState('ALL')
+
+  // Filtros interactivos para catálogo de almacenes
+  const [whListSearch, setWhListSearch] = useState('')
+  const [whListTypeFilter, setWhListTypeFilter] = useState<'ALL' | 'PRINCIPAL' | 'TIENDA' | 'MERMA'>('ALL')
 
   // Modal de Ingreso de Paleta RFID / Ajuste
   const [showAdjustModal, setShowAdjustModal] = useState(false)
@@ -469,6 +483,81 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
 
   // Lista visible de inventario según el filtro
   const displayedInventory = showZeroStock ? inventory : activeItems
+
+  // Lista de categorías para el selector de filtros
+  const categoriesList = useMemo(() => {
+    const cats = new Set<string>()
+    inventory.forEach((item) => {
+      const cName = item.producto?.categoria?.nombre
+      if (cName) cats.add(cName)
+    })
+    return Array.from(cats).sort()
+  }, [inventory])
+
+  // Filtrado de existencias según búsqueda, categoría y estado semáforo
+  const filteredStockItems = useMemo(() => {
+    let list = displayedInventory
+
+    if (stockCategoryFilter) {
+      list = list.filter((item) => item.producto?.categoria?.nombre === stockCategoryFilter)
+    }
+
+    if (stockStatusFilter !== 'ALL') {
+      list = list.filter((item) => item.estado_semaforo === stockStatusFilter)
+    }
+
+    if (stockSearch.trim()) {
+      const q = stockSearch.toLowerCase().trim()
+      list = list.filter((item) => {
+        const sku = (item.producto?.sku || '').toLowerCase()
+        const name = (item.producto?.nombre || '').toLowerCase()
+        return sku.includes(q) || name.includes(q)
+      })
+    }
+
+    return list
+  }, [displayedInventory, stockCategoryFilter, stockStatusFilter, stockSearch])
+
+  // Filtrado reactivo de movimientos
+  const filteredMovements = useMemo(() => {
+    let list = movements
+
+    if (movementTypeFilter !== 'ALL') {
+      list = list.filter((m) => m.tipo === movementTypeFilter)
+    }
+
+    if (movementSearch.trim()) {
+      const q = movementSearch.toLowerCase().trim()
+      list = list.filter((m) => {
+        const sku = (m.producto?.sku || '').toLowerCase()
+        const name = (m.producto?.nombre || '').toLowerCase()
+        const motivo = (m.motivo || '').toLowerCase()
+        return sku.includes(q) || name.includes(q) || motivo.includes(q)
+      })
+    }
+
+    return list
+  }, [movements, movementTypeFilter, movementSearch])
+
+  // Filtrado reactivo de catálogo de almacenes
+  const filteredWarehouseList = useMemo(() => {
+    let list = warehouses
+
+    if (whListTypeFilter !== 'ALL') {
+      list = list.filter((w) => w.tipo === whListTypeFilter)
+    }
+
+    if (whListSearch.trim()) {
+      const q = whListSearch.toLowerCase().trim()
+      list = list.filter((w) => {
+        const name = w.nombre.toLowerCase()
+        const prefijo = (w.prefijo_rfid || '').toLowerCase()
+        return name.includes(q) || prefijo.includes(q)
+      })
+    }
+
+    return list
+  }, [warehouses, whListTypeFilter, whListSearch])
 
   // Cálculos consolidados del almacén usando existencias activas y paletas físicas reales
   const summary = useMemo(() => {
@@ -1110,23 +1199,16 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
             <span aria-hidden="true">‹</span> Volver al panel principal
           </button>
           <div className="view-title-row">
-            <h2>Inventario y Almacenes</h2>
+            <h2>Inventario y almacenes</h2>
             <span className="module-code-badge">MOD-02</span>
           </div>
           <p className="page-lead">
             Supervisión de existencias físicas por almacén, conteo en paletas completas y puchos, y administración de sedes.
           </p>
         </div>
-        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'center' }}>
           <button
-            className="button secondary"
-            type="button"
-            onClick={startCreateWarehouse}
-          >
-            + Nueva Sede / Almacén
-          </button>
-          <button
-            className="button"
+            className="btn-primary"
             type="button"
             onClick={() => {
               setModalMode('rfid')
@@ -1137,55 +1219,58 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
             }}
             style={{ margin: 0 }}
           >
-            + Ingresar Paleta / Stock
+            + Ingresar stock / paleta
           </button>
           <button
-            className="button secondary"
+            className="btn-secondary"
             type="button"
             onClick={() => selectedWarehouseId && void loadWarehouseInventory(selectedWarehouseId)}
           >
-            Actualizar
+            Actualizar existencias
           </button>
         </div>
       </div>
 
-      {/* Alertas */}
+      {/* Alertas del Sistema */}
       {error && <p className="error notice" style={{ margin: '14px 0' }}>{error}</p>}
       {successMsg && (
         <div
-          className="notice"
+          role="status"
           style={{
             margin: '14px 0',
-            background: 'rgba(0, 180, 216, 0.12)',
-            borderColor: 'rgba(0, 180, 216, 0.4)',
-            color: '#38bdf8'
+            padding: '10px 16px',
+            backgroundColor: 'var(--color-brand-soft)',
+            border: '1px solid var(--color-border)',
+            borderRadius: '6px',
+            color: 'var(--color-brand-deep)',
+            fontSize: '13.5px',
+            fontWeight: 500
           }}
         >
-          ✓ {successMsg}
+          {successMsg}
         </div>
       )}
 
-      {/* Alertas del Sistema (Puchos Consolidados, Transferencias, etc.) */}
+      {/* Alertas Operativas Pendientes */}
       {systemAlerts.length > 0 && (
         <div
           style={{
             margin: '16px 0',
-            padding: '16px',
+            padding: '14px 18px',
             background: 'var(--color-surface)',
             border: '1px solid var(--color-warning)',
             borderRadius: '8px'
           }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <span style={{ fontSize: '1.2rem' }}>⚠️</span>
-              <strong style={{ color: 'var(--color-text-primary)', fontSize: '0.95rem' }}>
-                Alertas operativas pendientes ({systemAlerts.length})
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
+            <div>
+              <strong style={{ color: 'var(--color-warning)', fontSize: '13.5px' }}>
+                Atención operativa pendiente ({systemAlerts.length})
               </strong>
+              <span style={{ fontSize: '12.5px', color: 'var(--color-text-secondary)', marginLeft: '8px' }}>
+                Requieren verificación en piso de almacén
+              </span>
             </div>
-            <span style={{ fontSize: '0.78rem', color: 'var(--color-text-secondary)' }}>
-              Requieren verificación en piso de almacén
-            </span>
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
             {systemAlerts.map((alt) => (
@@ -1196,16 +1281,16 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
                   justifyContent: 'space-between',
                   alignItems: 'center',
                   background: 'var(--color-canvas)',
-                  padding: '10px 14px',
+                  padding: '9px 12px',
                   borderRadius: '6px',
                   border: '1px solid var(--color-border)'
                 }}
               >
                 <div>
-                  <div style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--color-text-primary)' }}>
+                  <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--color-text-primary)' }}>
                     [{alt.tipo}] {alt.mensaje}
                   </div>
-                  <div style={{ fontSize: '0.74rem', color: 'var(--color-text-secondary)', marginTop: '2px' }}>
+                  <div style={{ fontSize: '11.5px', color: 'var(--color-text-secondary)', marginTop: '1px' }}>
                     Registrada el {new Date(alt.created_at).toLocaleString()}
                   </div>
                 </div>
@@ -1214,9 +1299,8 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
                   className="btn-detail"
                   style={{
                     color: 'var(--color-brand)',
-                    fontSize: '0.78rem',
-                    padding: '4px 10px',
-                    cursor: 'pointer'
+                    fontSize: '12px',
+                    padding: '4px 10px'
                   }}
                   onClick={async () => {
                     await locationService.resolveAlert(alt.id_alerta)
@@ -1224,7 +1308,7 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
                     setSuccessMsg('Alerta marcada como verificada.')
                   }}
                 >
-                  ✓ Marcar como verificada
+                  Marcar verificada
                 </button>
               </div>
             ))}
@@ -1232,190 +1316,128 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
         </div>
       )}
 
-      {/* Selector Táctico de Almacenes */}
-      <div
+      {/* Selector Operativo de Almacenes (Soporta 50+ sedes con búsqueda instantánea) */}
+      <WarehouseSelectorBar
+        warehouses={warehouses}
+        selectedWarehouseId={selectedWarehouseId}
+        onSelectWarehouse={(id) => setSelectedWarehouseId(id)}
+        onNewWarehouse={startCreateWarehouse}
+        onEditWarehouse={(wh) => startEditWarehouse(wh)}
+        summary={summary}
+      />
+
+      {/* Tira Densa de KPIs Ejecutivos (Efferd 2 / skill_design.md) */}
+      <section
+        className="indicator-strip"
         style={{
           display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
-          gap: '16px',
-          marginBottom: '24px'
+          gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))',
+          gap: '14px',
+          marginBottom: '20px'
         }}
+        aria-label="Indicadores clave de existencias"
       >
-        {warehouses.map((wh) => {
-          const isSelected = wh.id_almacen === selectedWarehouseId
-          const tipoLabel = wh.tipo ? wh.tipo.charAt(0).toUpperCase() + wh.tipo.slice(1).toLowerCase() : 'Almacén'
-          return (
-            <button
-              key={wh.id_almacen}
-              type="button"
-              onClick={() => setSelectedWarehouseId(wh.id_almacen)}
+        <div className="indicator-card">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span className="indicator-label">Paletas completas</span>
+            <span
               style={{
-                textAlign: 'left',
-                padding: '16px 18px',
-                borderRadius: '8px',
-                border: isSelected ? '2px solid var(--color-brand)' : '1px solid var(--color-border)',
-                background: isSelected ? 'var(--color-brand-soft)' : 'var(--color-surface)',
-                boxShadow: 'none',
-                opacity: wh.activo ? 1 : 0.6,
-                cursor: 'pointer'
+                fontSize: '11px',
+                fontWeight: 700,
+                padding: '2px 7px',
+                borderRadius: '12px',
+                background: 'var(--color-brand-soft)',
+                color: 'var(--color-brand)',
+                border: '1px solid var(--color-border)'
               }}
             >
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span
-                  style={{
-                    fontSize: '0.74rem',
-                    fontWeight: 600,
-                    color: isSelected ? 'var(--color-brand-deep)' : 'var(--color-text-secondary)',
-                    textTransform: 'none'
-                  }}
-                >
-                  {tipoLabel} {!wh.activo && '(Inactivo)'} {wh.prefijo_rfid ? `· Tag: ${wh.prefijo_rfid}` : ''}
-                </span>
-                <span style={{ fontSize: '1.2rem' }}>
-                  {wh.tipo === 'PRINCIPAL' ? '🏢' : wh.tipo === 'TIENDA' ? '🏪' : '⚠️'}
-                </span>
-              </div>
-              <strong style={{ display: 'block', fontSize: '1.05rem', color: 'var(--color-text-primary)', margin: '6px 0 4px' }}>
-                {wh.nombre}
-              </strong>
-              <span style={{ fontSize: '0.8rem', color: 'var(--color-text-secondary)' }}>
-                Capacidad nominal: {wh.capacidad_m3 ?? '—'} m³
-              </span>
-            </button>
-          )
-        })}
-
-        {/* Tarjeta de botón rápido para agregar nuevo almacén */}
-        <button
-          type="button"
-          onClick={startCreateWarehouse}
-          style={{
-            border: '1px dashed var(--color-border)',
-            borderRadius: '8px',
-            background: 'var(--color-surface)',
-            padding: '16px 18px',
-            color: 'var(--color-brand)',
-            cursor: 'pointer',
-            display: 'flex',
-            flexDirection: 'column',
-            justifyContent: 'center',
-            alignItems: 'center',
-            gap: '6px'
-          }}
-        >
-          <span style={{ fontSize: '1.3rem' }}>➕</span>
-          <strong style={{ fontSize: '0.92rem' }}>Añadir nueva sede</strong>
-          <span style={{ fontSize: '0.75rem', color: 'var(--color-text-secondary)' }}>Crear almacén o tienda</span>
-        </button>
-      </div>
-
-      {/* Tarjetas de Métricas del Almacén Seleccionado */}
-      {selectedWarehouse && (
-        <div
-          className="panel"
-          style={{
-            padding: '20px 24px',
-            marginBottom: '24px'
-          }}
-        >
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '14px', marginBottom: '16px' }}>
-            <div>
-              <h3 style={{ margin: 0, fontSize: '1.15rem' }}>
-                Estado operativo: {selectedWarehouse.nombre}
-              </h3>
-              <p className="muted" style={{ margin: '4px 0 0', fontSize: '0.84rem' }}>
-                Consolidación de paletas completas y bultos pucho listos para conteo y escaneo RFID.
-              </p>
-            </div>
-            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-              <button
-                className="btn-detail"
-                type="button"
-                onClick={() => startEditWarehouse(selectedWarehouse)}
-                style={{ padding: '6px 12px' }}
-              >
-                Configurar almacén
-              </button>
-              <span
-                style={{
-                  fontSize: '0.82rem',
-                  fontWeight: 600,
-                  color: summary.pctOcupado > 85 ? 'var(--color-danger)' : 'var(--color-brand)',
-                  padding: '5px 12px',
-                  background: summary.pctOcupado > 85 ? 'rgba(179, 64, 42, 0.1)' : 'var(--color-brand-soft)',
-                  border: `1px solid ${summary.pctOcupado > 85 ? 'rgba(179, 64, 42, 0.3)' : 'var(--color-border)'}`,
-                  borderRadius: '6px'
-                }}
-              >
-                Ocupado: {summary.totalVolumenM3} m³ / {selectedWarehouse.capacidad_m3 ?? 500} m³ ({summary.pctOcupado}%)
-              </span>
-            </div>
+              Activas
+            </span>
           </div>
-
-          {/* Barra de Capacidad */}
-          <div
-            style={{
-              width: '100%',
-              height: '6px',
-              background: 'var(--color-border)',
-              borderRadius: '99px',
-              overflow: 'hidden',
-              marginBottom: '18px'
-            }}
-          >
-            <div
-              style={{
-                width: `${summary.pctOcupado}%`,
-                height: '100%',
-                background: summary.pctOcupado > 85
-                  ? 'var(--color-danger)'
-                  : 'var(--color-brand)',
-                transition: 'width 0.3s ease'
-              }}
-            />
-          </div>
-
-          {/* 4 Cajas de Métricas Tácticas */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: '14px' }}>
-            <div className="stat-box highlight">
-              <span>Paletas completas</span>
-              <strong style={{ fontSize: '1.45rem' }}>{summary.totalPaletas}</strong>
-              <span style={{ fontSize: '0.72rem', color: 'var(--color-text-secondary)', marginTop: '4px' }}>
-                {activePallets.length} física(s) con tag activo
-              </span>
-            </div>
-
-            <div className="stat-box">
-              <span>Paletas pucho</span>
-              <strong style={{ fontSize: '1.45rem', color: 'var(--color-brand)' }}>{summary.totalPuchos}</strong>
-              <span style={{ fontSize: '0.72rem', color: 'var(--color-text-secondary)', marginTop: '4px' }}>
-                {summary.totalCajasPuchos} caja(s) en puchos
-              </span>
-            </div>
-
-            <div className="stat-box">
-              <span>Total unidades</span>
-              <strong style={{ fontSize: '1.45rem' }}>{summary.totalUnidades.toLocaleString()}</strong>
-              <span style={{ fontSize: '0.72rem', color: 'var(--color-text-secondary)', marginTop: '4px' }}>Inventario total disponible</span>
-            </div>
-
-            <div className="stat-box">
-              <span>Artículos / SKUs</span>
-              <strong style={{ fontSize: '1.45rem', color: 'var(--color-brand)' }}>{summary.itemsCount}</strong>
-              <span style={{ fontSize: '0.72rem', color: 'var(--color-text-secondary)', marginTop: '4px' }}>Con existencias activas</span>
-            </div>
-          </div>
+          <div className="indicator-value">{summary.totalPaletas}</div>
+          <span className="indicator-context">
+            {activePallets.length} física(s) con chip RFID activo
+          </span>
         </div>
-      )}
 
-      {/* Navegación Subpestañas */}
+        <div className="indicator-card">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span className="indicator-label">Paletas pucho</span>
+            <span
+              style={{
+                fontSize: '11px',
+                fontWeight: 700,
+                padding: '2px 7px',
+                borderRadius: '12px',
+                background: summary.totalPuchos > 0 ? 'rgba(188, 121, 31, 0.1)' : 'var(--color-canvas)',
+                color: summary.totalPuchos > 0 ? 'var(--color-warning)' : 'var(--color-text-secondary)',
+                border: `1px solid ${summary.totalPuchos > 0 ? 'rgba(188, 121, 31, 0.28)' : 'var(--color-border)'}`
+              }}
+            >
+              Cajas sueltas
+            </span>
+          </div>
+          <div className="indicator-value">{summary.totalPuchos}</div>
+          <span className="indicator-context">
+            {summary.totalCajasPuchos} caja(s) pendientes de unificar
+          </span>
+        </div>
+
+        <div className="indicator-card">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span className="indicator-label">Total unidades en stock</span>
+            <span
+              style={{
+                fontSize: '11px',
+                fontWeight: 700,
+                padding: '2px 7px',
+                borderRadius: '12px',
+                background: 'rgba(47, 125, 79, 0.1)',
+                color: 'var(--color-success)',
+                border: '1px solid rgba(47, 125, 79, 0.28)'
+              }}
+            >
+              Disponible
+            </span>
+          </div>
+          <div className="indicator-value">{summary.totalUnidades.toLocaleString()}</div>
+          <span className="indicator-context">
+            Inventario registrado en esta sede
+          </span>
+        </div>
+
+        <div className="indicator-card">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span className="indicator-label">Artículos con existencias</span>
+            <span
+              style={{
+                fontSize: '11px',
+                fontWeight: 700,
+                padding: '2px 7px',
+                borderRadius: '12px',
+                background: 'var(--color-canvas)',
+                color: 'var(--color-text-secondary)',
+                border: '1px solid var(--color-border)'
+              }}
+            >
+              Catálogo
+            </span>
+          </div>
+          <div className="indicator-value">{summary.itemsCount}</div>
+          <span className="indicator-context">
+            SKUs activos en {selectedWarehouse?.nombre || 'la sede'}
+          </span>
+        </div>
+      </section>
+
+      {/* Navegación de Subpestañas */}
       <nav className="module-tabs">
         <button
           className={currentTab === 'stock' ? 'active' : ''}
           type="button"
           onClick={() => setCurrentTab('stock')}
         >
-          Existencias y Paletizado ({activeItems.length})
+          Existencias y paletizado ({activeItems.length})
         </button>
         <button
           className={currentTab === 'paletas' ? 'active' : ''}
@@ -1424,7 +1446,6 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
             setFilterPalletSku('')
             setCurrentTab('paletas')
           }}
-          style={{ fontWeight: currentTab === 'paletas' ? 700 : 500 }}
         >
           Paletas RFID ({activePallets.length})
         </button>
@@ -1433,105 +1454,143 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
           type="button"
           onClick={() => setCurrentTab('ubicaciones')}
         >
-          Racks Drive-In y Ubicaciones
+          Racks y ubicaciones
         </button>
         <button
           className={currentTab === 'movimientos' ? 'active' : ''}
           type="button"
           onClick={() => setCurrentTab('movimientos')}
         >
-          Historial de Movimientos ({movements.length})
+          Historial de movimientos ({movements.length})
         </button>
         <button
           className={currentTab === 'almacenes' ? 'active' : ''}
           type="button"
           onClick={() => setCurrentTab('almacenes')}
         >
-          Administración de Almacenes ({warehouses.length})
+          Administración de almacenes ({warehouses.length})
         </button>
       </nav>
 
       {/* Vista 1: Tabla de Existencias */}
       {currentTab === 'stock' && (
         <div className="panel" style={{ padding: '20px' }}>
-          {loadingStock ? (
-            <p className="muted">Cargando inventario táctico…</p>
-          ) : displayedInventory.length === 0 ? (
-            <div className="empty-state" style={{ textAlign: 'center', padding: '36px' }}>
-              <p style={{ fontSize: '1.2rem', margin: '0 0 8px' }}>📦 Sin existencias físicas en {selectedWarehouse?.nombre}</p>
-              <p className="muted" style={{ margin: 0 }}>
-                {zeroStockItems.length > 0
-                  ? `Todas las paletas y unidades han sido trasladadas o despachadas fuera de este almacén (${zeroStockItems.length} SKUs con balance 0).`
-                  : 'Aún no se ha registrado stock para este almacén. Puedes realizar un ingreso con el botón "+ Ingresar / Ajustar Stock".'}
-              </p>
-              {zeroStockItems.length > 0 && !showZeroStock && (
-                <div style={{ marginTop: '16px' }}>
-                  <button
-                    type="button"
-                    className="btn-detail"
-                    onClick={() => setShowZeroStock(true)}
-                  >
-                    👁️ Ver {zeroStockItems.length} {zeroStockItems.length === 1 ? 'producto sin existencias en este almacén' : 'productos sin existencias en este almacén'}
-                  </button>
-                </div>
+          {/* Barra de Filtros y Búsqueda Efferd */}
+          <div className="table-controls">
+            <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap', flex: 1 }}>
+              <div className="search-group" style={{ flex: '1 1 240px', maxWidth: '380px' }}>
+                <input
+                  type="text"
+                  placeholder="Buscar por SKU o descripción..."
+                  value={stockSearch}
+                  onChange={(e) => setStockSearch(e.target.value)}
+                  style={{ width: '100%' }}
+                />
+              </div>
+
+              <div className="filter-group">
+                <label htmlFor="cat-filter">Categoría:</label>
+                <select
+                  id="cat-filter"
+                  value={stockCategoryFilter}
+                  onChange={(e) => setStockCategoryFilter(e.target.value)}
+                >
+                  <option value="">Todas las categorías</option>
+                  {categoriesList.map((cat) => (
+                    <option key={cat} value={cat}>
+                      {cat}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="filter-group">
+                <label htmlFor="status-filter">Semáforo:</label>
+                <select
+                  id="status-filter"
+                  value={stockStatusFilter}
+                  onChange={(e) => setStockStatusFilter(e.target.value as any)}
+                >
+                  <option value="ALL">Todos los estados</option>
+                  <option value="VERDE">Óptimo (verde)</option>
+                  <option value="AMARILLO">Stock bajo (amarillo)</option>
+                  <option value="ROJO">Crítico (rojo)</option>
+                </select>
+              </div>
+
+              {(stockSearch || stockCategoryFilter || stockStatusFilter !== 'ALL') && (
+                <button
+                  type="button"
+                  className="btn-detail"
+                  onClick={() => {
+                    setStockSearch('')
+                    setStockCategoryFilter('')
+                    setStockStatusFilter('ALL')
+                  }}
+                  style={{ padding: '6px 12px' }}
+                >
+                  Limpiar filtros
+                </button>
               )}
+            </div>
+
+            {zeroStockItems.length > 0 && (
+              <label
+                style={{
+                  fontSize: '13px',
+                  color: 'var(--color-text-secondary)',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  cursor: 'pointer',
+                  userSelect: 'none'
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={showZeroStock}
+                  onChange={(e) => setShowZeroStock(e.target.checked)}
+                  style={{ cursor: 'pointer' }}
+                />
+                <span>Mostrar productos sin existencias ({zeroStockItems.length})</span>
+              </label>
+            )}
+          </div>
+
+          <div style={{ marginBottom: '10px', fontSize: '13px', color: 'var(--color-text-secondary)' }}>
+            Mostrando <strong>{filteredStockItems.length}</strong> de {displayedInventory.length} productos en {selectedWarehouse?.nombre}.
+          </div>
+
+          {loadingStock ? (
+            <p className="muted" style={{ padding: '24px 0', textAlign: 'center' }}>Cargando existencias del almacén…</p>
+          ) : filteredStockItems.length === 0 ? (
+            <div className="empty-state" style={{ textAlign: 'center', padding: '36px' }}>
+              <p style={{ fontSize: '1.1rem', fontWeight: 600, color: 'var(--color-brand-deep)', margin: '0 0 8px' }}>
+                Sin existencias coincidentes en {selectedWarehouse?.nombre}
+              </p>
+              <p className="muted" style={{ margin: 0 }}>
+                {zeroStockItems.length > 0 && !showZeroStock
+                  ? `Hay ${zeroStockItems.length} productos sin existencias en este almacén. Marca la casilla "Mostrar productos sin existencias" para visualizarlos.`
+                  : 'No se encontraron registros con los filtros seleccionados o este almacén aún no tiene stock cargado.'}
+              </p>
             </div>
           ) : (
             <div className="table-wrap">
-              {zeroStockItems.length > 0 && (
-                <div
-                  style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                    marginBottom: '14px',
-                    padding: '8px 14px',
-                    background: 'var(--color-surface)',
-                    border: '1px solid var(--color-border)',
-                    borderRadius: '6px',
-                    flexWrap: 'wrap',
-                    gap: '8px'
-                  }}
-                >
-                  <span style={{ fontSize: '0.86rem', color: 'var(--color-text-secondary)' }}>
-                    Mostrando <strong>{displayedInventory.length}</strong> {displayedInventory.length === 1 ? 'producto con existencias físicas' : 'productos con existencias físicas'} en {selectedWarehouse?.nombre}.
-                  </span>
-                  <label
-                    style={{
-                      fontSize: '0.84rem',
-                      color: 'var(--color-text-primary)',
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: '8px',
-                      cursor: 'pointer',
-                      userSelect: 'none'
-                    }}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={showZeroStock}
-                      onChange={(e) => setShowZeroStock(e.target.checked)}
-                      style={{ cursor: 'pointer' }}
-                    />
-                    <span>Mostrar productos agotados / sin existencias ({zeroStockItems.length})</span>
-                  </label>
-                </div>
-              )}
               <table>
                 <thead>
                   <tr>
-                    <th>SKU / Producto</th>
+                    <th>SKU y producto</th>
                     <th>Categoría</th>
-                    <th>Paletas Completas</th>
-                    <th>Puchos (Cajas)</th>
-                    <th>Stock Total Unidades</th>
-                    <th>Volumen Estimado</th>
-                    <th>Semáforo</th>
+                    <th>Paletas completas</th>
+                    <th>Puchos (cajas)</th>
+                    <th className="num-col">Stock total</th>
+                    <th className="num-col">Volumen estimado</th>
+                    <th style={{ textAlign: 'center' }}>Estado de stock</th>
                     <th>Acciones</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {displayedInventory.map((item) => {
+                  {filteredStockItems.map((item) => {
                     const stock = Number(item.stock_real) || 0
                     const prodOpt = allProducts.find((p) => p.id_producto === item.id_producto)
                     const isSerialItem = prodOpt?.modo_manejo === 'SERIALIZADO' || item.producto?.categoria?.modo_manejo === 'SERIALIZADO' || serialUnitsMap.has(item.id_producto)
@@ -1584,9 +1643,9 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
                               <span
                                 style={{
                                   display: 'inline-block',
-                                  padding: '2px 8px',
+                                  padding: '2px 7px',
                                   borderRadius: '4px',
-                                  fontSize: '0.78rem',
+                                  fontSize: '11.5px',
                                   fontWeight: 600,
                                   background: 'var(--color-brand-soft)',
                                   color: 'var(--color-brand)',
@@ -1595,89 +1654,93 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
                               >
                                 Serializado unitario
                               </span>
-                              <div style={{ fontSize: '0.74rem', color: 'var(--color-text-secondary)', marginTop: '4px' }}>
+                              <div style={{ fontSize: '12px', color: 'var(--color-text-secondary)', marginTop: '2px' }}>
                                 {prodUnits.length} {prodUnits.length === 1 ? 'equipo registrado' : 'equipos registrados'}
                               </div>
-                              <div style={{ fontSize: '0.72rem', marginTop: '2px', fontWeight: 600, color: prodUnits.length > 0 ? 'var(--color-success)' : 'var(--color-text-secondary)' }}>
-                                {prodUnits.length > 0 ? `🏷️ ${prodUnits.length} con chip RFID activo` : 'Sin chips enrolados'}
+                              <div style={{ fontSize: '11.5px', marginTop: '1px', fontWeight: 600, color: prodUnits.length > 0 ? 'var(--color-success)' : 'var(--color-text-secondary)' }}>
+                                {prodUnits.length > 0 ? `${prodUnits.length} con tag activo` : 'Sin chips enrolados'}
                               </div>
                             </div>
                           ) : (
-                            <>
-                              <strong style={{ fontSize: '1.05rem', color: paletasCompletas > 0 ? 'var(--color-brand)' : 'inherit' }}>
+                            <div>
+                              <strong style={{ fontSize: '14px', color: paletasCompletas > 0 ? 'var(--color-brand)' : 'var(--color-text-primary)' }}>
                                 {paletasCompletas} {paletasCompletas === 1 ? 'paleta' : 'paletas'}
                               </strong>
-                              <div style={{ fontSize: '0.74rem', color: 'var(--color-text-secondary)' }}>
+                              <div style={{ fontSize: '12px', color: 'var(--color-text-secondary)' }}>
                                 ({paletasCompletas * cPaleta} cajas)
                               </div>
-                              <div style={{ fontSize: '0.72rem', marginTop: '4px', fontWeight: 600, color: paletasCompletas > 0 ? 'var(--color-success)' : 'var(--color-text-secondary)' }}>
-                                {paletasCompletas > 0 ? `🏷️ ${paletasCompletas} completa(s) con tag` : '0 completas activas'}
+                              <div style={{ fontSize: '11.5px', marginTop: '1px', fontWeight: 600, color: paletasCompletas > 0 ? 'var(--color-brand)' : 'var(--color-text-secondary)' }}>
+                                {paletasCompletas > 0 ? `${paletasCompletas} con tag activo` : '0 completas activas'}
                               </div>
-                            </>
+                            </div>
                           )}
                         </td>
                         <td>
                           {isSerialItem ? (
-                            <span style={{ fontSize: '0.8rem', color: 'var(--color-text-secondary)' }}>
-                              No aplica (control por serie)
+                            <span style={{ fontSize: '12.5px', color: 'var(--color-text-secondary)' }}>
+                              No aplica
                             </span>
                           ) : (
-                            <>
-                              <span style={{ fontWeight: 700, color: puchosCount > 0 ? 'var(--color-warning)' : 'inherit' }}>
+                            <div>
+                              <span style={{ fontWeight: 600, color: puchosCount > 0 ? 'var(--color-warning)' : 'inherit' }}>
                                 {puchosCount > 0 ? `${cajasPuchos} cajas (${puchosCount} pucho)` : '0 cajas'}
                               </span>
-                              <div style={{ fontSize: '0.74rem', color: 'var(--color-text-secondary)' }}>
+                              <div style={{ fontSize: '12px', color: 'var(--color-text-secondary)' }}>
                                 ({cajasPuchos * uCaja} unid.)
                               </div>
                               {puchosCount > 1 && (
-                                <div style={{ fontSize: '0.70rem', color: 'var(--color-danger)', fontWeight: 600, marginTop: '2px' }}>
-                                  ⚠️ {puchosCount} puchos (unificar)
+                                <div style={{ fontSize: '11px', color: 'var(--color-warning)', fontWeight: 600, marginTop: '2px' }}>
+                                  {puchosCount} puchos (unificar)
                                 </div>
                               )}
-                            </>
+                            </div>
                           )}
                         </td>
-                        <td>
-                          <strong style={{ fontSize: '1.1rem', color: 'var(--color-text-primary)' }}>
+                        <td className="num-col">
+                          <strong style={{ fontSize: '14px', color: 'var(--color-text-primary)' }}>
                             {stock.toLocaleString()}
                           </strong>{' '}
-                          <span style={{ fontSize: '0.78rem', color: 'var(--color-text-secondary)' }}>
+                          <span style={{ fontSize: '12px', color: 'var(--color-text-secondary)' }}>
                             {item.producto?.unidad_medida ?? 'UNID'}
                           </span>
                         </td>
-                        <td>
+                        <td className="num-col">
                           {volM3 ? `${volM3.toFixed(3)} m³` : '—'}
                         </td>
-                        <td>
+                        <td style={{ textAlign: 'center' }}>
                           <span
                             style={{
                               display: 'inline-block',
-                              padding: '3px 10px',
-                              borderRadius: '99px',
-                              fontSize: '0.76rem',
-                              fontWeight: 800,
+                              padding: '2px 8px',
+                              borderRadius: '12px',
+                              fontSize: '11.5px',
+                              fontWeight: 600,
                               background:
                                 item.estado_semaforo === 'VERDE'
-                                  ? 'rgba(0, 180, 216, 0.15)'
+                                  ? 'rgba(47, 125, 79, 0.1)'
                                   : item.estado_semaforo === 'AMARILLO'
-                                  ? 'rgba(234, 179, 8, 0.18)'
-                                  : 'rgba(239, 68, 68, 0.2)',
+                                  ? 'rgba(188, 121, 31, 0.1)'
+                                  : 'rgba(179, 64, 42, 0.1)',
                               color:
                                 item.estado_semaforo === 'VERDE'
-                                  ? '#38bdf8'
+                                  ? 'var(--color-success)'
                                   : item.estado_semaforo === 'AMARILLO'
-                                  ? '#fbbf24'
-                                  : '#f87171',
+                                  ? 'var(--color-warning)'
+                                  : 'var(--color-danger)',
                               border: `1px solid ${
                                 item.estado_semaforo === 'VERDE'
-                                  ? 'rgba(0, 180, 216, 0.4)'
+                                  ? 'rgba(47, 125, 79, 0.28)'
                                   : item.estado_semaforo === 'AMARILLO'
-                                  ? 'rgba(234, 179, 8, 0.4)'
-                                  : 'rgba(239, 68, 68, 0.4)'
+                                  ? 'rgba(188, 121, 31, 0.28)'
+                                  : 'rgba(179, 64, 42, 0.28)'
                               }`
                             }}
                           >
-                            ● {item.estado_semaforo}
+                            {item.estado_semaforo === 'VERDE'
+                              ? 'Óptimo'
+                              : item.estado_semaforo === 'AMARILLO'
+                              ? 'Stock bajo'
+                              : 'Crítico'}
                           </span>
                         </td>
                         <td>
@@ -1697,7 +1760,7 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
                                 setShowAdjustModal(true)
                               }}
                             >
-                              Ajustar Stock
+                              Ajustar stock
                             </button>
                             {isSerialItem ? (
                               <button
@@ -1714,7 +1777,7 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
                                 }}
                                 title={prodUnits.length > 0 ? `Ver los ${prodUnits.length} equipos serializados en almacén` : 'No hay equipos registrados con serie en este almacén'}
                               >
-                                {prodUnits.length > 0 ? `Ver equipos (${prodUnits.length} seriales)` : 'Equipos seriales (0)'}
+                                {prodUnits.length > 0 ? `Ver equipos (${prodUnits.length})` : 'Equipos seriales (0)'}
                               </button>
                             ) : (
                               <button
@@ -1730,7 +1793,7 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
                                 }}
                                 title={totalPaletasFisicas > 0 ? `Ver las ${totalPaletasFisicas} paletas físicas con tag RFID en almacén` : 'No hay paletas físicas con tag RFID para este producto'}
                               >
-                                {totalPaletasFisicas > 0 ? `Ver paletas (${totalPaletasFisicas} físicas)` : 'Paletas físicas (0)'}
+                                {totalPaletasFisicas > 0 ? `Ver paletas (${totalPaletasFisicas})` : 'Paletas físicas (0)'}
                               </button>
                             )}
                           </div>
@@ -1771,39 +1834,99 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
       {/* Vista 2: Historial de Movimientos */}
       {currentTab === 'movimientos' && (
         <div className="panel" style={{ padding: '20px' }}>
-          <h3 style={{ margin: '0 0 14px', fontSize: '1.1rem' }}>
-            Últimos Movimientos en {selectedWarehouse?.nombre}
-          </h3>
-          {movements.length === 0 ? (
-            <p className="muted">No hay movimientos registrados en este almacén aún.</p>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px', flexWrap: 'wrap', gap: '12px' }}>
+            <div>
+              <h3 style={{ margin: 0, fontFamily: 'var(--font-display)', fontSize: '18px', fontWeight: 600 }}>
+                Movimientos recientes en {selectedWarehouse?.nombre}
+              </h3>
+              <p className="muted" style={{ margin: '2px 0 0', fontSize: '13px' }}>
+                Registro cronológico de entradas, salidas y ajustes de inventario.
+              </p>
+            </div>
+          </div>
+
+          <div className="table-controls">
+            <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap', flex: 1 }}>
+              <div className="search-group" style={{ flex: '1 1 240px', maxWidth: '380px' }}>
+                <input
+                  type="text"
+                  placeholder="Buscar por producto o motivo..."
+                  value={movementSearch}
+                  onChange={(e) => setMovementSearch(e.target.value)}
+                  style={{ width: '100%' }}
+                />
+              </div>
+
+              <div className="filter-group">
+                <label htmlFor="mov-type-filter">Tipo de movimiento:</label>
+                <select
+                  id="mov-type-filter"
+                  value={movementTypeFilter}
+                  onChange={(e) => setMovementTypeFilter(e.target.value)}
+                >
+                  <option value="ALL">Todos los tipos</option>
+                  <option value="INGRESO_COMPLETO">Ingreso completo</option>
+                  <option value="INGRESO_PUCHO">Ingreso pucho</option>
+                  <option value="SALIDA">Salida</option>
+                  <option value="AJUSTE">Ajuste</option>
+                  <option value="TRANSFERENCIA">Transferencia</option>
+                </select>
+              </div>
+
+              {(movementSearch || movementTypeFilter !== 'ALL') && (
+                <button
+                  type="button"
+                  className="btn-detail"
+                  onClick={() => {
+                    setMovementSearch('')
+                    setMovementTypeFilter('ALL')
+                  }}
+                  style={{ padding: '6px 12px' }}
+                >
+                  Limpiar filtros
+                </button>
+              )}
+            </div>
+            <span style={{ fontSize: '13px', color: 'var(--color-text-secondary)' }}>
+              Mostrando {filteredMovements.length} de {movements.length} registros
+            </span>
+          </div>
+
+          {filteredMovements.length === 0 ? (
+            <p className="muted" style={{ textAlign: 'center', padding: '30px' }}>
+              No se encontraron movimientos registrados con los filtros aplicados.
+            </p>
           ) : (
             <div className="table-wrap">
               <table>
                 <thead>
                   <tr>
-                    <th>Fecha / Hora</th>
-                    <th>Tipo</th>
+                    <th>Fecha y hora</th>
+                    <th>Tipo de movimiento</th>
                     <th>Producto</th>
-                    <th>Cantidad Afectada</th>
-                    <th>Detalle / Motivo</th>
+                    <th className="num-col">Cantidad afectada</th>
+                    <th>Detalle y motivo</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {movements.map((m) => (
+                  {filteredMovements.map((m) => (
                     <tr key={m.id_movimiento}>
-                      <td style={{ fontSize: '0.82rem', fontFamily: 'monospace' }}>
+                      <td style={{ fontSize: '12.5px', fontFamily: 'monospace' }}>
                         {new Date(m.fecha_hora).toLocaleString()}
                       </td>
                       <td>
                         <span className="sku-badge">{m.tipo}</span>
                       </td>
                       <td>
-                        <strong>{m.producto?.sku}</strong> · {m.producto?.nombre}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <span className="sku-badge">{m.producto?.sku}</span>
+                          <span>{m.producto?.nombre}</span>
+                        </div>
                       </td>
-                      <td style={{ fontWeight: 700 }}>
-                        {m.cantidad_afectada} unidades
+                      <td className="num-col" style={{ fontWeight: 600 }}>
+                        {m.cantidad_afectada.toLocaleString()} unid.
                       </td>
-                      <td style={{ fontSize: '0.85rem', color: 'var(--color-text-secondary)' }}>
+                      <td style={{ fontSize: '13px', color: 'var(--color-text-secondary)' }}>
                         {m.motivo ?? '—'}
                       </td>
                     </tr>
@@ -1820,19 +1943,66 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
         <div className="panel" style={{ padding: '20px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', flexWrap: 'wrap', gap: '12px' }}>
             <div>
-              <h3 style={{ margin: 0, fontSize: '1.15rem' }}>Catálogo y Configuración de Almacenes</h3>
-              <p className="muted" style={{ margin: '4px 0 0', fontSize: '0.85rem' }}>
-                Administra las sedes físicas, puntos de venta y áreas de merma de Importaciones Shalom.
+              <h3 style={{ margin: 0, fontFamily: 'var(--font-display)', fontSize: '20px', fontWeight: 600 }}>
+                Catálogo y configuración de almacenes
+              </h3>
+              <p className="muted" style={{ margin: '4px 0 0', fontSize: '13.5px' }}>
+                Administra las sedes físicas, puntos de venta y áreas de merma de la empresa.
               </p>
             </div>
             <button
-              className="button"
+              className="btn-primary"
               type="button"
               onClick={startCreateWarehouse}
               style={{ margin: 0 }}
             >
-              + Registrar Nuevo Almacén
+              + Registrar nuevo almacén
             </button>
+          </div>
+
+          <div className="table-controls">
+            <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap', flex: 1 }}>
+              <div className="search-group" style={{ flex: '1 1 240px', maxWidth: '380px' }}>
+                <input
+                  type="text"
+                  placeholder="Buscar sede por nombre o prefijo..."
+                  value={whListSearch}
+                  onChange={(e) => setWhListSearch(e.target.value)}
+                  style={{ width: '100%' }}
+                />
+              </div>
+
+              <div className="filter-group">
+                <label htmlFor="wh-type-filter">Tipo de sede:</label>
+                <select
+                  id="wh-type-filter"
+                  value={whListTypeFilter}
+                  onChange={(e) => setWhListTypeFilter(e.target.value as any)}
+                >
+                  <option value="ALL">Todos los tipos</option>
+                  <option value="PRINCIPAL">Sede principal</option>
+                  <option value="TIENDA">Punto de venta / Tienda</option>
+                  <option value="MERMA">Área de merma</option>
+                </select>
+              </div>
+
+              {(whListSearch || whListTypeFilter !== 'ALL') && (
+                <button
+                  type="button"
+                  className="btn-detail"
+                  onClick={() => {
+                    setWhListSearch('')
+                    setWhListTypeFilter('ALL')
+                  }}
+                  style={{ padding: '6px 12px' }}
+                >
+                  Limpiar filtros
+                </button>
+              )}
+            </div>
+            <span style={{ fontSize: '13px', color: 'var(--color-text-secondary)' }}>
+              Mostrando {filteredWarehouseList.length} de {warehouses.length} sedes
+            </span>
           </div>
 
           <div className="table-wrap">
@@ -1840,60 +2010,77 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
               <thead>
                 <tr>
                   <th>ID</th>
-                  <th>Nombre del Almacén</th>
-                  <th>Tipo de Sede</th>
-                  <th>Capacidad Nominal</th>
+                  <th>Nombre del almacén</th>
+                  <th>Prefijo RFID</th>
+                  <th>Tipo de sede</th>
+                  <th className="num-col">Capacidad nominal</th>
                   <th>Estado</th>
                   <th>Acciones</th>
                 </tr>
               </thead>
               <tbody>
-                {warehouses.map((wh) => (
+                {filteredWarehouseList.map((wh) => (
                   <tr key={wh.id_almacen}>
-                    <td style={{ fontFamily: 'monospace', fontWeight: 700 }}>#{wh.id_almacen}</td>
+                    <td style={{ fontFamily: 'monospace', fontWeight: 600 }}>#{wh.id_almacen}</td>
                     <td>
-                      <strong style={{ fontSize: '1rem', color: 'var(--color-text-main)' }}>{wh.nombre}</strong>
+                      <strong style={{ fontSize: '14px', color: 'var(--color-text-primary)' }}>{wh.nombre}</strong>
                     </td>
                     <td>
                       <span
                         style={{
-                          padding: '3px 10px',
-                          borderRadius: '6px',
-                          fontSize: '0.78rem',
+                          fontFamily: 'monospace',
+                          fontSize: '11.5px',
                           fontWeight: 700,
-                          background: wh.tipo === 'PRINCIPAL'
-                            ? 'rgba(0, 180, 216, 0.15)'
-                            : wh.tipo === 'TIENDA'
-                            ? 'rgba(234, 179, 8, 0.15)'
-                            : 'rgba(239, 68, 68, 0.15)',
-                          color: wh.tipo === 'PRINCIPAL'
-                            ? '#38bdf8'
-                            : wh.tipo === 'TIENDA'
-                            ? '#fbbf24'
-                            : '#f87171',
-                          border: `1px solid ${
-                            wh.tipo === 'PRINCIPAL'
-                              ? 'rgba(0, 180, 216, 0.35)'
-                              : wh.tipo === 'TIENDA'
-                              ? 'rgba(234, 179, 8, 0.35)'
-                              : 'rgba(239, 68, 68, 0.35)'
-                          }`
+                          color: 'var(--color-brand)',
+                          background: 'var(--color-brand-soft)',
+                          border: '1px solid rgba(22, 125, 141, 0.25)',
+                          padding: '2px 7px',
+                          borderRadius: '4px'
                         }}
                       >
-                        {wh.tipo}
+                        {wh.prefijo_rfid || '—'}
                       </span>
                     </td>
-                    <td>{wh.capacidad_m3 ? `${wh.capacidad_m3} m³` : 'Sin límite'}</td>
                     <td>
                       <span
                         style={{
                           padding: '2px 8px',
                           borderRadius: '4px',
-                          fontSize: '0.75rem',
+                          fontSize: '12px',
                           fontWeight: 600,
-                          background: wh.activo ? 'rgba(47, 125, 79, 0.1)' : 'rgba(98, 121, 133, 0.1)',
+                          background: wh.tipo === 'PRINCIPAL'
+                            ? 'var(--color-brand-soft)'
+                            : wh.tipo === 'TIENDA'
+                            ? 'var(--color-canvas)'
+                            : 'rgba(188, 121, 31, 0.1)',
+                          color: wh.tipo === 'PRINCIPAL'
+                            ? 'var(--color-brand)'
+                            : wh.tipo === 'TIENDA'
+                            ? 'var(--color-text-secondary)'
+                            : 'var(--color-warning)',
+                          border: `1px solid ${
+                            wh.tipo === 'PRINCIPAL'
+                              ? 'rgba(22, 125, 141, 0.25)'
+                              : wh.tipo === 'TIENDA'
+                              ? 'var(--color-border)'
+                              : 'rgba(188, 121, 31, 0.28)'
+                          }`
+                        }}
+                      >
+                        {wh.tipo === 'PRINCIPAL' ? 'Sede principal' : wh.tipo === 'TIENDA' ? 'Punto de venta' : 'Zona de merma'}
+                      </span>
+                    </td>
+                    <td className="num-col">{wh.capacidad_m3 ? `${wh.capacidad_m3} m³` : 'Sin límite'}</td>
+                    <td>
+                      <span
+                        style={{
+                          padding: '2px 8px',
+                          borderRadius: '4px',
+                          fontSize: '12px',
+                          fontWeight: 600,
+                          background: wh.activo ? 'rgba(47, 125, 79, 0.1)' : 'var(--color-canvas)',
                           color: wh.activo ? 'var(--color-success)' : 'var(--color-text-secondary)',
-                          border: `1px solid ${wh.activo ? 'rgba(47, 125, 79, 0.3)' : 'var(--color-border)'}`
+                          border: `1px solid ${wh.activo ? 'rgba(47, 125, 79, 0.28)' : 'var(--color-border)'}`
                         }}
                       >
                         {wh.activo ? 'Activo' : 'Inactivo'}
@@ -1906,29 +2093,21 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
                           type="button"
                           onClick={() => startEditWarehouse(wh)}
                         >
-                          Editar
+                          Configurar
                         </button>
                         <button
-                          className="button secondary"
+                          className="btn-secondary"
                           type="button"
                           onClick={() => void handleToggleWarehouseActive(wh)}
-                          style={{ padding: '6px 10px', fontSize: '0.8rem', margin: 0 }}
+                          style={{ padding: '4px 10px', fontSize: '12px' }}
                         >
                           {wh.activo ? 'Desactivar' : 'Activar'}
                         </button>
                         <button
                           type="button"
+                          className="btn-detail-danger"
                           onClick={() => void handleDeleteWarehouse(wh)}
-                          style={{
-                            background: 'rgba(239, 68, 68, 0.12)',
-                            color: '#f87171',
-                            border: '1px solid rgba(239, 68, 68, 0.35)',
-                            padding: '6px 10px',
-                            borderRadius: '6px',
-                            fontWeight: 700,
-                            fontSize: '0.8rem',
-                            cursor: 'pointer'
-                          }}
+                          style={{ padding: '4px 10px', fontSize: '12px' }}
                         >
                           Eliminar
                         </button>
@@ -1954,10 +2133,10 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
                   <div className="modal-header">
                     <div>
                       <p className="eyebrow">
-                        {isSerialModal ? 'OPERACIÓN DE ENTRADA / INVENTARIO SERIALIZADO' : 'OPERACIÓN DE ENTRADA / INVENTARIO PALETIZADO'}
+                        {isSerialModal ? 'Operación de entrada · Inventario serializado' : 'Operación de entrada · Inventario paletizado'}
                       </p>
                       <h3>
-                        {isSerialModal ? 'Ingreso de Maquinaria y Equipos Serializados' : 'Ingreso de Stock e Identificación de Paletas'}
+                        {isSerialModal ? 'Ingreso de maquinaria y equipos serializados' : 'Ingreso de stock e identificación de paletas'}
                       </h3>
                       <p className="muted" style={{ margin: '4px 0 0', fontSize: '0.86rem' }}>
                         Sede: <strong>{selectedWarehouse?.nombre}</strong> · Modo:{' '}
@@ -1989,7 +2168,7 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
                         cursor: 'pointer'
                       }}
                     >
-                      {isSerialModal ? '🏷️ Enrolar Equipo (Tag RFID + Número de Serie)' : '🏷️ Ingreso de Paleta con Tag RFID (Manual Web)'}
+                      {isSerialModal ? 'Enrolar equipo (Tag RFID + serie)' : 'Ingreso de paleta con tag RFID'}
                     </button>
                     <button
                       type="button"
@@ -2005,7 +2184,7 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
                         cursor: 'pointer'
                       }}
                     >
-                      {isSerialModal ? '📊 Ajuste Contable de Unidades' : '📊 Ajuste Masivo Contable'}
+                      {isSerialModal ? 'Ajuste contable de unidades' : 'Ajuste contable masivo'}
                     </button>
                   </div>
 
@@ -2101,10 +2280,11 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
                             <label style={{ display: 'grid', gap: '6px', fontWeight: 600, fontSize: '0.88rem' }}>
                               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                                 <span>
-                                  Código Tag RFID <span style={{ color: 'var(--color-danger)' }}>*</span>
+                                  Código tag RFID <span style={{ color: 'var(--color-danger)' }}>*</span>
                                 </span>
                                 <button
                                   type="button"
+                                  className="btn-detail"
                                   onClick={async () => {
                                     if (!selectedWarehouseId) return
                                     const suggested = await locationService.suggestNextRfidTag(
@@ -2114,18 +2294,12 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
                                     setModalUidTag(suggested)
                                   }}
                                   style={{
-                                    padding: '3px 10px',
-                                    fontSize: '0.74rem',
-                                    borderRadius: '4px',
-                                    background: 'var(--color-brand-soft)',
-                                    color: 'var(--color-brand)',
-                                    border: '1px solid var(--color-border)',
-                                    cursor: 'pointer',
-                                    fontWeight: 600
+                                    padding: '2px 8px',
+                                    fontSize: '0.74rem'
                                   }}
                                   title="Sugerir siguiente código secuencial según el prefijo oficial de este almacén"
                                 >
-                                  ⚡ Sugerir ({selectedWarehouse?.prefijo_rfid || 'TAG'})
+                                  Sugerir código ({selectedWarehouse?.prefijo_rfid || 'TAG'})
                                 </button>
                               </div>
                               <input
@@ -2150,7 +2324,7 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
 
                           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '14px', marginBottom: '14px' }}>
                             <label style={{ display: 'grid', gap: '6px', fontWeight: 600, fontSize: '0.88rem' }}>
-                              Estado Operativo Inicial
+                              Estado operativo inicial
                               <select
                                 value={modalSerialEstado}
                                 onChange={(e) => setModalSerialEstado(e.target.value as EstadoUnidadSerial)}
@@ -2162,8 +2336,8 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
                                   color: 'var(--color-text-primary)'
                                 }}
                               >
-                                <option value="DISPONIBLE">DISPONIBLE — Operativo y listo</option>
-                                <option value="EN_MANTENIMIENTO">EN MANTENIMIENTO — Requiere revisión técnica</option>
+                                <option value="DISPONIBLE">Disponible — Operativo y listo</option>
+                                <option value="EN_MANTENIMIENTO">En mantenimiento — Requiere revisión técnica</option>
                               </select>
                             </label>
 
@@ -2189,13 +2363,13 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
                                       fontSize: '0.76rem',
                                       padding: '4px 8px',
                                       borderRadius: '4px',
-                                      background: 'rgba(188, 121, 31, 0.15)',
+                                      background: 'rgba(188, 121, 31, 0.1)',
                                       color: 'var(--color-warning)',
                                       fontWeight: 600,
-                                      border: '1px solid rgba(188, 121, 31, 0.3)'
+                                      border: '1px solid rgba(188, 121, 31, 0.28)'
                                     }}
                                   >
-                                    ⚠️ Requiere izaje
+                                    Requiere equipo de izaje
                                   </span>
                                 )}
                               </div>
@@ -2262,7 +2436,7 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
                                   }}
                                   title="Sugerir siguiente código secuencial según el prefijo oficial de este almacén"
                                 >
-                                  ⚡ Sugerir ({selectedWarehouse?.prefijo_rfid || 'TAG'})
+                                  Sugerir ({selectedWarehouse?.prefijo_rfid || 'TAG'})
                                 </button>
                               </div>
                               <input
@@ -2471,26 +2645,26 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
 
                     <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px' }}>
                       <button
-                        className="button secondary"
+                        className="btn-secondary"
                         type="button"
                         onClick={() => setShowAdjustModal(false)}
                       >
                         Cancelar
                       </button>
                       <button
-                        className="button"
+                        className="btn-primary"
                         type="submit"
                         disabled={savingAdjust}
                       >
                         {savingAdjust
-                          ? 'Guardando en Almacén…'
+                          ? 'Guardando en almacén…'
                           : isSerialModal
                           ? modalMode === 'rfid'
-                            ? 'Registrar Equipo e Ingresar Stock (+1 unid.)'
-                            : `Confirmar e Impactar Stock (+${modalSerialUnidadesAjuste} unid.)`
+                            ? 'Registrar equipo e ingresar stock (+1 unid.)'
+                            : `Confirmar e impactar stock (+${modalSerialUnidadesAjuste} unid.)`
                           : modalMode === 'rfid'
-                          ? `Registrar Paleta e Ingresar Stock (+${modalPreview?.totalUnidades?.toLocaleString() ?? 0} unid.)`
-                          : 'Confirmar e Impactar Stock'}
+                          ? `Registrar paleta e ingresar stock (+${modalPreview?.totalUnidades?.toLocaleString() ?? 0} unid.)`
+                          : 'Confirmar e impactar stock'}
                       </button>
                     </div>
                   </form>
@@ -2507,7 +2681,7 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
           <div className="modal-window" style={{ maxWidth: '780px' }} onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <div>
-                <p className="eyebrow">EQUIPOS SERIALIZADOS EN SEDE</p>
+                <p className="eyebrow">Equipos serializados en sede</p>
                 <h3>[{inspectSerialProd.product.sku}] {inspectSerialProd.product.nombre}</h3>
                 <p className="muted" style={{ margin: '4px 0 0', fontSize: '0.86rem' }}>
                   Almacén: <strong>{selectedWarehouse?.nombre}</strong> · Total registrados: <strong>{inspectSerialProd.units.length} equipos</strong>
@@ -2529,7 +2703,7 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
                 </p>
                 <button
                   type="button"
-                  className="button"
+                  className="btn-primary"
                   onClick={() => {
                     setModalProdId(String(inspectSerialProd.product.id_producto))
                     setModalMode('rfid')
@@ -2538,7 +2712,7 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
                     setShowAdjustModal(true)
                   }}
                 >
-                  + Enrolar Primer Equipo con Chip RFID
+                  + Enrolar primer equipo con chip RFID
                 </button>
               </div>
             ) : (
@@ -2546,10 +2720,10 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
                 <table>
                   <thead>
                     <tr>
-                      <th>N° Serie de Fábrica</th>
-                      <th>Tag RFID Asignado</th>
-                      <th>Estado Operativo</th>
-                      <th>Fecha de Ingreso</th>
+                      <th>Número de serie de fábrica</th>
+                      <th>Tag RFID asignado</th>
+                      <th>Estado operativo</th>
+                      <th>Fecha de ingreso</th>
                       <th style={{ textAlign: 'center' }}>Acción</th>
                     </tr>
                   </thead>
@@ -2573,7 +2747,7 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
                                 fontSize: '0.84rem'
                               }}
                             >
-                              🏷️ {tagUid}
+                              Tag: {tagUid}
                             </span>
                           </td>
                           <td>
@@ -2589,7 +2763,7 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
                                 border: `1px solid ${u.estado === 'DISPONIBLE' ? 'rgba(47, 125, 79, 0.3)' : 'rgba(188, 121, 31, 0.3)'}`
                               }}
                             >
-                              ● {u.estado}
+                              {u.estado}
                             </span>
                           </td>
                           <td style={{ fontSize: '0.82rem', color: 'var(--color-text-secondary)' }}>
@@ -2617,14 +2791,14 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '16px' }}>
               <button
                 type="button"
-                className="button secondary"
+                className="btn-secondary"
                 onClick={() => setInspectSerialProd(null)}
               >
                 Cerrar
               </button>
               <button
                 type="button"
-                className="button"
+                className="btn-primary"
                 onClick={() => {
                   setModalProdId(String(inspectSerialProd.product.id_producto))
                   setModalMode('rfid')
@@ -2633,7 +2807,7 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
                   setShowAdjustModal(true)
                 }}
               >
-                + Enrolar Otro Equipo
+                + Enrolar otro equipo
               </button>
             </div>
           </div>
@@ -2646,7 +2820,7 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
           <div className="modal-window" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <div>
-                <p className="eyebrow">GESTIÓN DE INFRAESTRUCTURA</p>
+                <p className="eyebrow">Gestión de infraestructura</p>
                 <h3>{editingWh ? `Editar Almacén: ${editingWh.nombre}` : 'Registrar Nuevo Almacén o Sede'}</h3>
                 <p className="muted" style={{ margin: '4px 0 0', fontSize: '0.86rem' }}>
                   Define las especificaciones de capacidad y propósito logístico del almacén.
@@ -2697,7 +2871,7 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
                     />
                     <button
                       type="button"
-                      className="button secondary"
+                      className="btn-secondary"
                       style={{ padding: '8px 12px', fontSize: '0.8rem', whiteSpace: 'nowrap' }}
                       onClick={() => {
                         setWhPrefijo(generateWarehousePrefix(whNombre))
@@ -2705,7 +2879,7 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
                       }}
                       title="Regenerar con las 3 primeras letras de cada palabra"
                     >
-                      ⚡ Auto (3 letras)
+                      Generar prefijo
                     </button>
                   </div>
                   <span className="muted" style={{ fontSize: '0.8rem', fontWeight: 400 }}>
@@ -2722,15 +2896,15 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
                       style={{
                         padding: '10px',
                         borderRadius: '8px',
-                        background: 'var(--color-bg-surface-raised)',
+                        background: 'var(--color-surface)',
                         border: '1px solid var(--color-border)',
-                        color: 'var(--color-text-main)'
+                        color: 'var(--color-text-primary)'
                       }}
                       required
                     >
-                      <option value="PRINCIPAL">🏢 PRINCIPAL (Hub logístico / Central)</option>
-                      <option value="TIENDA">🏪 TIENDA (Punto de venta / Despacho)</option>
-                      <option value="MERMA">⚠️ MERMA (Zona de descarte y averías)</option>
+                      <option value="PRINCIPAL">Principal (Hub logístico / Central)</option>
+                      <option value="TIENDA">Tienda (Punto de venta / Despacho)</option>
+                      <option value="MERMA">Merma (Zona de descarte y averías)</option>
                     </select>
                   </label>
 
@@ -2761,18 +2935,18 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
 
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', marginTop: '24px' }}>
                 <button
-                  className="button secondary"
+                  className="btn-secondary"
                   type="button"
                   onClick={() => setShowWhModal(false)}
                 >
                   Cancelar
                 </button>
                 <button
-                  className="button"
+                  className="btn-primary"
                   type="submit"
                   disabled={savingWh}
                 >
-                  {savingWh ? 'Guardando Almacén…' : editingWh ? 'Actualizar Almacén' : 'Crear Almacén'}
+                  {savingWh ? 'Guardando almacén…' : editingWh ? 'Actualizar almacén' : 'Crear almacén'}
                 </button>
               </div>
             </form>
