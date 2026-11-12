@@ -1,8 +1,8 @@
 import { useState, useMemo, useEffect } from 'react'
 import * as XLSX from 'xlsx'
-import type { ProjectionOrder, CalculatedProjectionRow } from '../../types/projections'
-import { packingListService } from '../../services/packingListService'
-import { projectionService } from '../../services/projectionService'
+import type { ProjectionOrder, CalculatedProjectionRow } from '../../../types/projections'
+import { packingListService } from '../../../services/packingListService'
+import { projectionService } from '../../../services/projectionService'
 
 export type DecisionState = 'PENDIENTE' | 'CAMBIANDO' | 'APROBADO_100' | 'APROBADO_RECALCULO'
 

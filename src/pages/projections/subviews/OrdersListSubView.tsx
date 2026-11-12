@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import type { ProjectionOrder, ProjectionOrderStatus } from '../../types/projections'
+import type { ProjectionOrder, ProjectionOrderStatus } from '../../../types/projections'
 
 interface OrdersListSubViewProps {
   orders: ProjectionOrder[]

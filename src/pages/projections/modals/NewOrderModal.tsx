@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import type { ProjectionTemplate } from '../../types/projections'
+import type { ProjectionTemplate } from '../../../types/projections'
 
 interface SupplierOption {
   id_proveedor: number

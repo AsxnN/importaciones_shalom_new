@@ -1,6 +1,6 @@
 import { useState, useRef, useMemo } from 'react'
-import { projectionService } from '../../services/projectionService'
-import type { ExcelImportResult, ProjectionItem, ProjectionTemplate } from '../../types/projections'
+import { projectionService } from '../../../services/projectionService'
+import type { ExcelImportResult, ProjectionItem, ProjectionTemplate } from '../../../types/projections'
 
 interface ExcelImportModalProps {
   isOpen: boolean
